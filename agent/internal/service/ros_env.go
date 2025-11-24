@@ -16,7 +16,6 @@ import (
 const (
 	IDRosCore  = "sys-roscore"
 	IDFoxglove = "sys-foxglove"
-	IDWebVideo = "sys-webvideo"
 )
 
 type ROSManager struct {
@@ -118,14 +117,6 @@ func (rm *ROSManager) generateServiceConfig(id string) (ProcessConfig, error) {
 			"port:=8765",
 			"address:=0.0.0.0",
 		}
-	case IDWebVideo:
-		baseCfg.CmdStr = "rosrun"
-		baseCfg.Args = []string{
-			"web_video_server",
-			"web_video_server",
-			"_port:=8081",
-			"_address:=0.0.0.0",
-		}
 	default:
 		return ProcessConfig{}, fmt.Errorf("unknown service id: %s", id)
 	}
@@ -154,7 +145,7 @@ func init() {
 			// 只有 roscore 挂了才触发“全家桶重启”
 			// 使用 Goroutine 执行，防止阻塞 Watchdog 回调线程
 			go GlobalROSManager.handleCoreCrash()
-		case IDFoxglove, IDWebVideo:
+		case IDFoxglove:
 			// 只有在非全局重启模式下，才允许单点重启
 			time.Sleep(2 * time.Second)
 			GlobalROSManager.RestartService(id)
@@ -190,8 +181,9 @@ func (rm *ROSManager) handleCoreCrash() {
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() { defer wg.Done(); rm.StopService(IDFoxglove) }()
-	go func() { defer wg.Done(); rm.StopService(IDWebVideo) }()
 	wg.Wait()
+	// 停止自动压缩监控
+	GlobalCompressor.Stop()
 
 	// 4. 等待端口释放
 	log.Println("[ROS-Watchdog] Waiting for ports to clear...")
@@ -222,8 +214,6 @@ func (rm *ROSManager) StartDefaultServices() {
 		log.Println("[ROS] roscore is ready. Starting bridges...")
 		// 2. 清理并启动 Foxglove Bridge
 		cleanupZombie("foxglove_bridge")
-		// 3. 清理并启动 Web Video Server
-		cleanupZombie("web_video_server")
 		// 稍微等待操作系统释放端口资源
 		time.Sleep(1 * time.Second)
 
@@ -231,11 +221,10 @@ func (rm *ROSManager) StartDefaultServices() {
 		if cfg, err := rm.generateServiceConfig(IDFoxglove); err == nil {
 			GlobalProcManager.StartProcess(cfg)
 		}
+		// 3. 启动/重置自动压缩管理器
+		GlobalCompressor.Reset() // 防止重启时的残留
+		GlobalCompressor.Start() // 启动后台扫描协程
 		log.Println("[ROS] roscore is ready. Starting web-video-server...")
-		// 3. 启动 Web Video Server
-		if cfg, err := rm.generateServiceConfig(IDWebVideo); err == nil {
-			GlobalProcManager.StartProcess(cfg)
-		}
 		log.Println("[ROS] ros is ready.")
 	}()
 }

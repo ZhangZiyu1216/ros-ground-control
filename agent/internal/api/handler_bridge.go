@@ -9,7 +9,7 @@ import (
 
 // BridgeReq 定义请求体格式
 type BridgeReq struct {
-	Service string `json:"service"` // "foxglove" 或 "webvideo"
+	Service string `json:"service"` // "foxglove"
 	Action  string `json:"action"`  // "start", "stop", "restart"
 }
 
@@ -26,8 +26,6 @@ func RegisterBridgeRoutes(rg *gin.RouterGroup) {
 		switch req.Service {
 		case "foxglove":
 			targetID = service.IDFoxglove
-		case "webvideo":
-			targetID = service.IDWebVideo
 		default:
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Unknown service name"})
 			return

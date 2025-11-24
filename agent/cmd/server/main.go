@@ -1,7 +1,6 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -81,14 +80,14 @@ func installService() {
 
 func main() {
 	// 定义命令行参数
-	installFlag := flag.Bool("install", false, "Install systemd service and enable auto-start")
-	flag.Parse()
+	//installFlag := flag.Bool("install", false, "Install systemd service and enable auto-start")
+	//flag.Parse()
 
 	// 如果是安装模式
-	if *installFlag {
-		installService()
-		return // 安装完直接退出
-	}
+	//if *installFlag {
+	//	installService()
+	//	return // 安装完直接退出
+	//}
 
 	log.Println("Starting ROS Ground Control Agent...")
 	// 加载配置
@@ -112,6 +111,8 @@ func main() {
 	if err := service.InitFileWatcher(); err != nil {
 		log.Fatalf("Failed to init file watcher: %v", err)
 	}
+	// 启动硬件监控
+	service.GlobalMonitor.StartMonitor()
 	// 启动网络监控
 	service.GlobalROSManager.StartNetworkMonitor()
 	// 启动 ROS 基础设施

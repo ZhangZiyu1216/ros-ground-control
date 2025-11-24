@@ -13,6 +13,7 @@ type AgentConfig struct {
 	// NetworkInterface 指定网卡名称，如 "wlan0", "eth0"。
 	// 如果为空或 "auto"，则使用自动探测
 	NetworkInterface string `json:"network_interface"`
+	CompressorPollMs int    `json:"compressor_poll_ms"`
 }
 
 var (
@@ -28,6 +29,7 @@ func LoadConfig() error {
 	// 默认配置
 	GlobalConfig = &AgentConfig{
 		NetworkInterface: "auto",
+		CompressorPollMs: 3000, // 默认 3 秒
 	}
 
 	data, err := os.ReadFile(ConfigFileName)

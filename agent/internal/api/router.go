@@ -21,6 +21,7 @@ func NewRouter() *gin.Engine {
 	r.GET("/ws/logs", func(c *gin.Context) {
 		connect.HandleWebsocket(c)
 	})
+	r.GET("/ws/terminal", handleTerminal)
 
 	// 3. 配置 API 路由组
 	apiGroup := r.Group("/api")
@@ -43,7 +44,7 @@ func NewRouter() *gin.Engine {
 		procGroup := apiGroup.Group("/proc")
 		RegisterProcRoutes(procGroup)
 
-		// Bridge 接口 (预留，尚未实现)
+		// Bridge 接口
 		bridgeGroup := apiGroup.Group("/bridge")
 		RegisterBridgeRoutes(bridgeGroup)
 	}
