@@ -2,6 +2,8 @@ package api
 
 import (
 	"net/http"
+	"os"
+	"path/filepath"
 	"ros-ground-control/agent/internal/security"
 	"ros-ground-control/agent/internal/service"
 	"ros-ground-control/agent/pkg/utils"
@@ -300,5 +302,42 @@ func RegisterFSRoutes(rg *gin.RouterGroup) {
 	rg.GET("/download", func(c *gin.Context) {
 		path := c.Query("path")
 		c.File(path)
+	})
+	// 13. 上传接口（流式）
+	rg.POST("/upload", func(c *gin.Context) {
+		// 1. 获取参数
+		dstPath := c.PostForm("path")
+		if dstPath == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Missing 'path' field"})
+			return
+		}
+		// 2. 获取文件流
+		fileHeader, err := c.FormFile("file")
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Missing 'file' field"})
+			return
+		}
+		// 3. 保存到临时目录 (/tmp)
+		// Gin 的 SaveUploadedFile 使用 io.Copy，内存占用小
+		tmpPath := filepath.Join(os.TempDir(), "agent-upload-"+filepath.Base(fileHeader.Filename))
+		if err := c.SaveUploadedFile(fileHeader, tmpPath); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Upload failed: " + err.Error()})
+			return
+		}
+		// 4. 获取 Sudo 密码 (如果有)
+		pwd, err := getSudoPassword(c)
+		if err != nil {
+			os.Remove(tmpPath) // 清理
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		// 5. 移动到目标位置 (复用 MovePath，它支持 Sudo 和跨分区移动)
+		// 如果目标路径需要 Root 权限，MovePath 会使用 sudo mv
+		if err := service.MovePath(tmpPath, dstPath, pwd); err != nil {
+			os.Remove(tmpPath) // 确保清理
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Move failed: " + err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "uploaded", "size": fileHeader.Size})
 	})
 }

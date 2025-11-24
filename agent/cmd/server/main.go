@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"ros-ground-control/agent/internal/security"
 	"ros-ground-control/agent/internal/service"
 	"ros-ground-control/agent/pkg/config"
+	"ros-ground-control/agent/pkg/utils"
 )
 
 // Systemd 服务模板
@@ -80,14 +82,14 @@ func installService() {
 
 func main() {
 	// 定义命令行参数
-	//installFlag := flag.Bool("install", false, "Install systemd service and enable auto-start")
-	//flag.Parse()
+	installFlag := flag.Bool("install", false, "Install systemd service and enable auto-start")
+	flag.Parse()
 
 	// 如果是安装模式
-	//if *installFlag {
-	//	installService()
-	//	return // 安装完直接退出
-	//}
+	if *installFlag {
+		installService()
+		return // 安装完直接退出
+	}
 
 	log.Println("Starting ROS Ground Control Agent...")
 	// 加载配置
@@ -96,10 +98,24 @@ func main() {
 	}
 	// 生成密钥
 	security.InitKeys()
+	// 初始化文件监控
+	if err := service.InitFileWatcher(); err != nil {
+		log.Fatalf("Failed to init file watcher: %v", err)
+	}
+
+	hostname, err := os.Hostname()
+	if err != nil {
+		log.Printf("Warning: Could not get hostname: %v. Using default 'ros-agent'", err)
+		hostname = "ros-agent"
+	}
+	log.Printf("[Agent] Detected hostname: %s", hostname)
 
 	// 1. 启动 mDNS 服务 (让 Client 能发现我们)
-	// 这里的 hostname 和 port 可以在 config 中配置，暂时写死
-	mdnsService, err := connect.StartMDNS("robot1", 8080)
+	cfg := config.GetConfig()
+	preferredIP := utils.GetOutboundIP(cfg.NetworkInterface)
+	log.Printf("[Agent] Detected hostname: %s, Preferred IP: %s", hostname, preferredIP)
+
+	mdnsService, err := connect.StartMDNS(hostname, 8080, cfg.AgentID, preferredIP)
 	if err != nil {
 		log.Fatalf("Failed to start mDNS: %v", err)
 	}
@@ -107,10 +123,6 @@ func main() {
 
 	// 启动 WebSocket Hub 广播循环
 	go connect.GlobalHub.Run()
-	// 初始化文件监控
-	if err := service.InitFileWatcher(); err != nil {
-		log.Fatalf("Failed to init file watcher: %v", err)
-	}
 	// 启动硬件监控
 	service.GlobalMonitor.StartMonitor()
 	// 启动网络监控

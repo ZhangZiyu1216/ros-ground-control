@@ -40,6 +40,9 @@ type MonitoredProcess struct {
 	manualStop bool      // 标记是否是用户手动停止的
 	startTime  time.Time // 记录启动时间
 	mu         sync.Mutex
+	// 支持外部进程
+	isExternal  bool
+	externalPID int
 }
 
 type ProcessManager struct {
@@ -66,6 +69,12 @@ func (pm *ProcessManager) ListProcesses() []ProcessInfo {
 		if proc.cmd != nil && proc.cmd.Process != nil {
 			pid = proc.cmd.Process.Pid
 		}
+		// 区分内部和外部进程获取 PID 的方式
+		if proc.isExternal {
+			pid = proc.externalPID
+		} else if proc.cmd != nil && proc.cmd.Process != nil {
+			pid = proc.cmd.Process.Pid
+		}
 
 		list = append(list, ProcessInfo{
 			ID:        proc.config.ID,
@@ -77,6 +86,31 @@ func (pm *ProcessManager) ListProcesses() []ProcessInfo {
 	})
 
 	return list
+}
+
+// 新增：收养外部进程
+func (pm *ProcessManager) AdoptExternalProcess(id string, cmdStr string, pid int) {
+	proc := &MonitoredProcess{
+		config: ProcessConfig{
+			ID:     id,
+			CmdStr: cmdStr,
+		},
+		startTime:   time.Now(), // 我们不知道它确切什么时候启动的，暂时记为被接管的时间
+		isExternal:  true,
+		externalPID: pid,
+	}
+
+	pm.procs.Store(id, proc)
+
+	// 发送一个系统通知
+	connect.GlobalHub.Broadcast(connect.LogMessage{
+		ProcessID: id,
+		Stream:    "system",
+		Data:      fmt.Sprintf("Process adopted from external PID: %d. (Logs unavailable)", pid),
+	})
+
+	// 注意：我们无法 wait 这个进程，也无法读取日志
+	// 只能通过轮询检查它是否还活着，或者等用户手动 Stop
 }
 
 // StartProcess 统一入口
@@ -192,11 +226,34 @@ func (pm *ProcessManager) StopProcess(id string) error {
 
 	proc.mu.Lock()
 	proc.manualStop = true // 标记为手动停止，防止触发自动重启
+	// 处理外部进程
+	if proc.isExternal {
+		proc.mu.Unlock()
+		// 直接向 OS 发送信号
+		// 检查进程是否存在
+		p, err := os.FindProcess(proc.externalPID)
+		if err != nil {
+			pm.procs.Delete(id)
+			return nil
+		}
+		// 发送 SIGINT
+		err = p.Signal(syscall.SIGINT)
+		// 无论成功失败，都从列表移除（因为我们无法 Wait 它的退出码）
+		pm.procs.Delete(id)
+
+		// 通知前端
+		connect.GlobalHub.Broadcast(connect.LogMessage{
+			ProcessID: id,
+			Stream:    "system",
+			Data:      "External process stopped.",
+		})
+		return err
+	}
+	// 处理内部进程
 	cmd := proc.cmd
 	proc.mu.Unlock()
 
 	if cmd != nil && cmd.Process != nil {
-		// 发送 SIGINT
 		return syscall.Kill(-cmd.Process.Pid, syscall.SIGINT)
 	}
 	return nil

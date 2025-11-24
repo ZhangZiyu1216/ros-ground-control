@@ -47,6 +47,10 @@ func NewRouter() *gin.Engine {
 		// Bridge 接口
 		bridgeGroup := apiGroup.Group("/bridge")
 		RegisterBridgeRoutes(bridgeGroup)
+
+		// 常用节点配置接口
+		nodeGroup := apiGroup.Group("/nodes")
+		RegisterNodeListRoutes(nodeGroup)
 	}
 
 	return r

@@ -58,10 +58,12 @@ func handlePing(c *gin.Context) {
 }
 
 func handleSysInfo(c *gin.Context) {
+	cfg := config.GetConfig()
 	c.JSON(200, gin.H{
 		"os":         runtime.GOOS,
 		"arch":       runtime.GOARCH,
 		"num_cpu":    runtime.NumCPU(),
-		"ros_distro": "noetic", // 这里后续应从环境变量读取
+		"ros_distro": "noetic",    // 这里后续应从环境变量读取
+		"id":         cfg.AgentID, // 稳定的 UUID
 	})
 }
