@@ -164,6 +164,10 @@ func WriteFile(path string, content string, password string) error {
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("sudo cp failed: %v, output: %s", err, string(output))
 	}
+
+	// 如果是从回收站删除，顺便清理元数据
+	TryCleanupTrashInfo(path)
+
 	return nil
 }
 
@@ -191,11 +195,16 @@ func DeletePath(path string, password string) error {
 func MovePath(src, dst string, password string) error {
 	// 1. Sudo 模式：直接调用 mv，它自动处理跨分区移动
 	if password != "" {
-		return execSudo(password, "mv", src, dst)
+		if err := execSudo(password, "mv", src, dst); err != nil {
+			return err
+		}
+		TryCleanupTrashInfo(src)
+		return nil
 	}
 	// 2. 普通模式：尝试原子重命名
 	err := os.Rename(src, dst)
 	if err == nil {
+		TryCleanupTrashInfo(src)
 		return nil
 	}
 	// 3. 普通模式回退：Copy + Delete

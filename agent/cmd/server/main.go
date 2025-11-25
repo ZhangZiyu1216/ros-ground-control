@@ -127,8 +127,9 @@ func main() {
 	service.GlobalMonitor.StartMonitor()
 	// 启动网络监控
 	service.GlobalROSManager.StartNetworkMonitor()
-	// 启动 ROS 基础设施
-	service.GlobalROSManager.StartDefaultServices()
+	// 现在不自动启动 ROS 基础设施
+	//service.GlobalROSManager.StartDefaultServices()
+	log.Println("[Agent] ROS Stack is in standby mode. Waiting for client request.")
 
 	// 2. 初始化 HTTP 路由
 	r := api.NewRouter()

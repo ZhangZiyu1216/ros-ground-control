@@ -44,13 +44,17 @@ func NewRouter() *gin.Engine {
 		procGroup := apiGroup.Group("/proc")
 		RegisterProcRoutes(procGroup)
 
-		// Bridge 接口
-		bridgeGroup := apiGroup.Group("/bridge")
-		RegisterBridgeRoutes(bridgeGroup)
+		// ros 服务接口
+		rosGroup := apiGroup.Group("/ros")
+		RegisterRosRoutes(rosGroup)
 
 		// 常用节点配置接口
 		nodeGroup := apiGroup.Group("/nodes")
 		RegisterNodeListRoutes(nodeGroup)
+
+		// ros 包录制接口
+		bagGroup := apiGroup.Group("/bag")
+		RegisterBagRoutes(bagGroup)
 	}
 
 	return r

@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"ros-ground-control/agent/internal/service"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -13,7 +14,7 @@ type BridgeReq struct {
 	Action  string `json:"action"`  // "start", "stop", "restart"
 }
 
-func RegisterBridgeRoutes(rg *gin.RouterGroup) {
+func RegisterRosRoutes(rg *gin.RouterGroup) {
 	rg.POST("/action", func(c *gin.Context) {
 		var req BridgeReq
 		if err := c.BindJSON(&req); err != nil {
@@ -24,6 +25,13 @@ func RegisterBridgeRoutes(rg *gin.RouterGroup) {
 		// 1. 将前端的服务名映射到内部 ID
 		var targetID string
 		switch req.Service {
+		// 启动全部服务
+		case "stack":
+			targetID = service.IDStack
+		// 启动roscore
+		case "roscore":
+			targetID = service.IDRosCore
+		// 启动rosbridge
 		case "foxglove":
 			targetID = service.IDFoxglove
 		default:
@@ -35,15 +43,25 @@ func RegisterBridgeRoutes(rg *gin.RouterGroup) {
 		var err error
 		switch req.Action {
 		case "start":
-			// 需要重新获取配置来启动，这里简化处理，假设 Manager 内部能处理重启动逻辑
-			// 由于我们在 ServiceConfig 里定义了 cmd，建议在 ROSManager 里增加一个 GetConfigByID 方法，
-			// 或者简单地只支持 restart/stop。
-			// 这里演示 Restart 的逻辑，Start 逻辑类似。
-			err = service.GlobalROSManager.RestartService(targetID)
+			err = service.GlobalROSManager.StartService(targetID)
 		case "stop":
-			err = service.GlobalROSManager.StopService(targetID)
+			if targetID == service.IDStack {
+				service.GlobalROSManager.StopDefaultServices()
+			} else {
+				err = service.GlobalROSManager.StopService(targetID)
+			}
 		case "restart":
-			err = service.GlobalROSManager.RestartService(targetID)
+			if targetID == service.IDStack {
+				service.GlobalROSManager.StopDefaultServices()
+				// 异步重启
+				go func() {
+					time.Sleep(2 * time.Second)
+					service.GlobalROSManager.StartService(service.IDStack)
+				}()
+			} else {
+				err = service.GlobalROSManager.RestartService(targetID)
+			}
+
 		default:
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Unknown action"})
 			return

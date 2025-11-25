@@ -8,7 +8,7 @@ const HEALTH_CHECK_INTERVAL = 1000
 const MAX_MISSED_HEARTBEATS = 3
 const AUTO_DISCONNECT_THRESHOLD = 15
 const MIN_CONNECTION_TIME = 600
-const HANDSHAKE_TIMEOUT = 2500
+const HANDSHAKE_TIMEOUT = 500
 const MAX_CONNECT_RETRIES = 2
 
 export const useRobotStore = defineStore('robot', () => {
@@ -16,7 +16,13 @@ export const useRobotStore = defineStore('robot', () => {
   const activeID = ref(null)
 
   const activeClient = computed(() => (activeID.value ? clients[activeID.value] : null))
+  const getCacheKey = (id) => `robot_nodes_cache_${id}` // --- 辅助：缓存 Key 生成 ---
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+  const sudoPassword = ref('')
+  const setSudoPassword = (pwd) => {
+    sudoPassword.value = pwd
+  }
 
   // --- 内部工具：通过 mDNS 找回 IP 和 ID---
   const findNewIpByHostname = (targetHostname) => {
@@ -113,6 +119,7 @@ export const useRobotStore = defineStore('robot', () => {
 
   const updateServiceStatusFromProcs = (client, processes) => {
     if (!Array.isArray(processes)) return
+    // 1. 更新系统服务灯
     const hasRoscore = processes.some((p) => p.id.includes('roscore') || p.cmd.includes('roscore'))
     client.serviceStatus.roscore = hasRoscore ? 'active' : 'inactive'
     const hasBridge = processes.some(
@@ -123,6 +130,24 @@ export const useRobotStore = defineStore('robot', () => {
         p.cmd.includes('rosbridge')
     )
     client.serviceStatus.bridge = hasBridge ? 'active' : 'inactive'
+    // 2. 更新 Dashboard 节点状态
+    // 遍历 client.nodes，看 processes 里有没有 id 匹配的
+    if (client.nodes) {
+      client.nodes.forEach((node) => {
+        // 匹配规则：进程 ID 等于 节点名称 (我们在 startNodeProcess 里是这么传的)
+        const proc = processes.find((p) => p.id === node.name)
+        if (proc) {
+          node.status = 'running'
+        } else {
+          // 如果之前是 starting，可能还没启动完，不要立即置为 stopped，除非超时(需额外逻辑，暂简化)
+          // 这里简单处理：只要列表里没有，就是 stopped
+          // 为了防止 starting 瞬间变 stopped，可以加个 ignore 锁，或者依赖 Agent 响应速度
+          if (node.status !== 'starting') {
+            node.status = 'stopped'
+          }
+        }
+      })
+    }
   }
 
   // --- addConnection ---
@@ -159,6 +184,7 @@ export const useRobotStore = defineStore('robot', () => {
         hostname: hostname,
         name: settings.name,
         status: 'setting_up',
+        nodes: [],
         api: null,
         sysInfo: {},
         serviceStatus: { roscore: 'unknown', bridge: 'unknown' },
@@ -173,6 +199,16 @@ export const useRobotStore = defineStore('robot', () => {
       clients[currentKey].name = settings.name
     }
 
+    // 尝试加载本地缓存，防止界面空白
+    try {
+      const cached = localStorage.getItem(getCacheKey(currentKey))
+      if (cached) {
+        clients[currentKey].nodes = JSON.parse(cached)
+      }
+    } catch (e) {
+      console.warn('Failed to load node cache', e)
+    }
+
     activeID.value = currentKey
     const startTime = Date.now()
 
@@ -183,6 +219,7 @@ export const useRobotStore = defineStore('robot', () => {
     let procRes = { processes: [] }
     let connectError = null
 
+    // 尝试连接，包括直连、mDNS找回
     try {
       // === 阶段 1: 直连尝试 ===
       let attempts = 0
@@ -307,13 +344,15 @@ export const useRobotStore = defineStore('robot', () => {
       finalClient.status = 'ready'
       finalClient.ip = finalIp
       finalClient.sysInfo = infoRes
+      syncNodes(currentKey)
 
       updateServiceStatusFromProcs(finalClient, procRes.processes)
 
       // 切换视图到最终的 ID Key
       activeID.value = currentKey
-
       startHealthCheck(currentKey)
+
+      // 因为任何原因没有连接成功
     } catch (e) {
       if (clients[currentKey]) clients[currentKey].status = 'failed'
       throw e
@@ -352,13 +391,279 @@ export const useRobotStore = defineStore('robot', () => {
     }
   }
 
+  // 1. 同步节点 (Pull & Cache)
+  const syncNodes = async (clientId) => {
+    const client = clients[clientId]
+    if (!client || !client.api) return
+
+    try {
+      const res = await client.api.get('/nodes') // 获取列表
+      if (Array.isArray(res)) {
+        // 映射数据结构 (Agent 返回 args 数组，前端可能需要处理)
+        client.nodes = res.map((n) => ({
+          ...n,
+          status: 'stopped' // 默认状态，后续通过 proc/list 更新真实状态
+        }))
+        // 更新缓存
+        localStorage.setItem(getCacheKey(clientId), JSON.stringify(client.nodes))
+      }
+    } catch (e) {
+      console.error('Failed to sync nodes:', e)
+    }
+  }
+
+  // 2. 保存/更新节点 (Push & Cache)
+  const saveNodeConfig = async (clientId, nodeData) => {
+    const client = clients[clientId]
+    // 先更新本地 UI (乐观更新)
+    const existingIdx = client.nodes.findIndex((n) => n.id === nodeData.id)
+    if (existingIdx !== -1) {
+      client.nodes[existingIdx] = { ...client.nodes[existingIdx], ...nodeData }
+    } else {
+      client.nodes.push({ ...nodeData, status: 'stopped' })
+    }
+    // 更新缓存
+    localStorage.setItem(getCacheKey(clientId), JSON.stringify(client.nodes))
+
+    // 如果在线，发送给后端
+    if (client.api && client.status === 'ready') {
+      try {
+        await client.api.post('/nodes', nodeData)
+        await syncNodes(clientId) // 重新拉取以确认 ID 等字段
+      } catch (e) {
+        ElNotification({ title: '同步失败', message: '节点配置未能保存到机器人', type: 'warning' })
+        throw e
+      }
+    }
+  }
+
+  // 3. 删除节点
+  const deleteNodeConfig = async (clientId, nodeId) => {
+    const client = clients[clientId]
+    // 本地删除
+    client.nodes = client.nodes.filter((n) => n.id !== nodeId)
+    localStorage.setItem(getCacheKey(clientId), JSON.stringify(client.nodes))
+
+    // 远程删除
+    if (client.api && client.status === 'ready') {
+      try {
+        await client.api.delete(`/nodes?id=${nodeId}`)
+        // eslint-disable-next-line no-unused-vars
+      } catch (e) {
+        ElNotification({ title: '同步失败', message: '未能从机器人删除节点', type: 'warning' })
+      }
+    }
+  }
+
+  // 4. 启动节点 (调用 /proc/start)
+  const startNodeProcess = async (clientId, node) => {
+    const client = clients[clientId]
+    if (!client || !client.api) return
+
+    // Agent 要求的 Body: { id, cmd, args }
+    // 我们使用配置里的 cmd 和 args
+    const payload = {
+      id: node.name, // 使用名称作为进程 ID (方便用户识别)
+      cmd: node.cmd || 'roslaunch',
+      args: node.args || []
+    }
+
+    // 乐观更新状态
+    const target = client.nodes.find((n) => n.id === node.id)
+    if (target) target.status = 'starting'
+
+    try {
+      await client.api.post('/proc/start', payload)
+      // 成功后不需要手动设为 running，心跳包 (proc/list) 会自动更新它
+    } catch (e) {
+      if (target) target.status = 'error'
+      throw e
+    }
+  }
+
+  // 5. 停止节点 (调用 /proc/stop)
+  const stopNodeProcess = async (clientId, nodeIdName) => {
+    const client = clients[clientId]
+    if (!client || !client.api) return
+
+    await client.api.post('/proc/stop', { id: nodeIdName })
+  }
+
+  // --- 文件系统 (File System) Actions ---
+
+  // 1. 获取侧边栏 (Places)
+  const fsGetSidebar = async (clientId) => {
+    const client = clients[clientId]
+    if (!client || !client.api) return { places: [], bookmarks: [] }
+
+    try {
+      const res = await client.api.get('/fs/places')
+      const places = []
+      const common = res.common || {}
+
+      // 定义标准 XDG 目录映射
+      const commonKeys = [
+        { key: 'home', name: '主目录', icon: 'House' },
+        { key: 'desktop', name: '桌面', icon: 'Monitor' },
+        { key: 'documents', name: '文档', icon: 'Document' },
+        { key: 'downloads', name: '下载', icon: 'Download' },
+        { key: 'music', name: '音乐', icon: 'Headset' },
+        { key: 'pictures', name: '图片', icon: 'Picture' },
+        { key: 'videos', name: '视频', icon: 'Film' },
+        { key: 'trash', name: '回收站', icon: 'Delete' }
+      ]
+
+      // 1. 构建常用位置
+      commonKeys.forEach((item) => {
+        if (common[item.key]) {
+          places.push({
+            name: item.name,
+            path: common[item.key],
+            icon: item.icon
+          })
+        }
+      })
+
+      // 兜底策略
+      if (places.length === 0) {
+        if (common.home) places.push({ name: '主目录', path: common.home, icon: 'House' })
+        else places.push({ name: '根目录', path: '/', icon: 'Folder' })
+      }
+
+      // 2. 解析书签 (并去重)
+      const rawBookmarks = Array.isArray(res.bookmarks) ? res.bookmarks : []
+      const commonPaths = new Set(places.map((p) => p.path))
+      // 过滤掉那些已经在 places 里出现过的书签
+      const uniqueBookmarks = rawBookmarks.filter((b) => !commonPaths.has(b.path))
+
+      const formattedBookmarks = uniqueBookmarks.map((b) => ({
+        ...b,
+        icon: b.icon || 'Star'
+      }))
+
+      return {
+        places,
+        bookmarks: formattedBookmarks
+      }
+    } catch (e) {
+      console.error('Failed to get sidebar:', e)
+      return { places: [], bookmarks: [] }
+    }
+  }
+
+  // 2. 列出目录 (List)
+  const fsListDir = async (clientId, pathStr) => {
+    const client = clients[clientId]
+    if (!client || !client.api) return []
+    try {
+      const res = await client.api.get('/fs/list', { params: { path: pathStr } })
+      return Array.isArray(res) ? res : []
+    } catch (e) {
+      console.error('fsListDir error:', e)
+      throw e
+    }
+  }
+
+  // 3. 创建目录 (Mkdir)
+  const fsMkdir = async (clientId, pathStr) => {
+    const client = clients[clientId]
+    if (!client || !client.api) return
+    await client.api.post('/fs/mkdir', { path: pathStr })
+  }
+
+  // 4. 写文件 (Write - 用于新建空文件)
+  const fsWriteFile = async (clientId, pathStr, content = '') => {
+    const client = clients[clientId]
+    if (!client || !client.api) return
+    await client.api.post('/fs/write', { path: pathStr, content })
+  }
+
+  // 5. 重命名/移动 (Rename/Move)
+  const fsRename = async (clientId, src, dst) => {
+    const client = clients[clientId]
+    if (!client || !client.api) return
+    await client.api.post('/fs/rename', { src, dst })
+  }
+
+  // 6. 复制 (Copy)
+  const fsCopy = async (clientId, src, dst) => {
+    const client = clients[clientId]
+    if (!client || !client.api) return
+    await client.api.post('/fs/copy', { src, dst })
+  }
+
+  // 7. 删除 (Delete/Trash)
+  const fsDelete = async (clientId, pathStr) => {
+    const client = clients[clientId]
+    if (!client || !client.api) return
+    await client.api.post('/fs/delete', { path: pathStr })
+  }
+
+  // 8. 彻底删除
+  const fsDeletePermanent = async (clientId, pathStr) => {
+    const client = clients[clientId]
+    if (!client || !client.api) return
+    await client.api.post('/fs/delete/permanent', { path: pathStr })
+  }
+
+  // 9. 还原回收站文件
+  const fsRestore = async (clientId, pathStr) => {
+    const client = clients[clientId]
+    if (!client || !client.api) return
+    await client.api.post('/fs/restore', { path: pathStr })
+  }
+  // 10. 上传文件
+  const fsUpload = async (clientId, { file, targetPath, onProgress }) => {
+    const client = clients[clientId]
+    if (!client || !client.api) throw new Error('Client not connected')
+
+    const formData = new FormData()
+    // Agent 要求字段: 'file' (二进制流), 'path' (远程绝对路径)
+    formData.append('file', file)
+    formData.append('path', targetPath)
+
+    try {
+      await client.api.post('/fs/upload', formData, {
+        // Axios 原生支持上传进度回调
+        onUploadProgress: (progressEvent) => {
+          if (onProgress && progressEvent.total) {
+            const percent = Math.round((progressEvent.loaded * 100) / progressEvent.total)
+            onProgress(percent)
+          }
+        },
+        // 上传时间较长，覆盖默认超时设置
+        timeout: 0 // 0 表示无超时
+      })
+    } catch (e) {
+      console.error('Upload failed:', e)
+      throw e
+    }
+  }
+
   return {
     clients,
     activeID,
     activeClient,
+    sudoPassword,
+    setSudoPassword,
     addConnection,
     removeConnection,
     refreshStatus,
-    setClientStatus
+    setClientStatus,
+    syncNodes,
+    saveNodeConfig,
+    deleteNodeConfig,
+    startNodeProcess,
+    stopNodeProcess,
+    fsGetSidebar,
+    fsListDir,
+    fsMkdir,
+    fsWriteFile,
+    fsRename,
+    fsCopy,
+    fsDelete,
+    fsDeletePermanent,
+    fsRestore,
+    fsUpload
   }
 })

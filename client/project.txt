@@ -1,0 +1,219 @@
+我计划重构现有的 ROS 1 桌面管理软件。原始的软件架构由客户端完成了所有任务：建立连接、管理进程、管理文件等，这一切都建立在SSH/SFTP的基础上，软件以“模拟人类操作终端”的形式完成任务，相当不稳定。
+
+重构的软件采用现代化的Client-Server (C/S)架构。
+服务端 (Agent): 运行在机器人（Linux）上的守护进程，负责执行系统指令、管理文件、通过 HTTP 提供 API，并管理 ROS 相关的后台服务（Foxglove Bridge, Web Video Server）。由 Go 编写。
+客户端 (Client): 运行在操作员电脑（Windows/Mac/Linux）上的桌面软件，负责 UI 交互、数据可视化、代码编辑。
+
+现在，Agent已经开发完成：
+通信协议: HTTP (RESTful) 用于指令；WebSocket 用于日志；mDNS 用于发现。
+数据格式: JSON。
+
+mDNS 服务定义
+Service Type: _ros-agent._tcp
+TXT Record: version=2.0, hostname=HOSTNAME, id=54b2a1c0-00b8-4091-a620-123456789abc, ip=192.168.1.1
+这里的id是机器人的唯一物理标识。
+
+HTTP API 接口详述
+基础连接信息
+协议: HTTP (RESTful) 用于指令; WebSocket 用于实时流
+Base URL: http://<robot-ip>:8080/api
+
+端口说明:
+8080: Agent API & WebSocket
+8765: Foxglove Bridge (ROS 数据)
+跨域 (CORS): 已全部开启
+
+安全与鉴权 (Sudo 提权机制)
+对于涉及系统权限的操作（如修改系统配置、写入 /root 目录），API 会返回 HTTP 500 错误，并在 error 字段中包含 "permission denied"。
+客户端需实现以下“RSA 加密提权”流程：
+获取公钥:
+调用 [GET] /sys/pubkey
+获取 PEM 格式的 RSA 公钥。
+加密密码:
+使用 RSA-OAEP-SHA256 算法对用户的 Sudo 密码进行加密。
+将加密后的二进制数据转为 Base64 字符串。
+重试请求:
+在原请求的 Header 中添加字段：
+X-Sudo-Password: <Base64字符串>
+再次发送请求。后端将自动解密并使用 Sudo 执行操作。
+
+WebSocket 实时数据流
+
+统一日志流 URL: ws://<robot-ip>:8080/ws/logs
+客户端连接后，将收到 JSON 格式的消息广播。
+
+消息结构:
+{
+"process_id": "string", // 来源 ID (例如 "sys-roscore" 或 "system")
+"stream": "string", // 数据流类型
+"data": "string" // 内容 (可能是纯文本日志，也可能是 JSON 字符串)
+}
+
+Stream 类型定义:
+
+stdout: 进程的标准输出
+
+stderr: 进程的标准错误
+
+system: 系统级通知 (如 "Process exited", "Network changed")
+
+system-stats: 硬件监控数据 (CPU/内存/温度等)，data 字段为 JSON
+
+fs-event: 文件监控事件，data 字段为 JSON (如 {"event":"create", "path":"..."})
+
+接口列表详情
+
+A. 系统与硬件监控
+
+[GET] /sys/ping
+描述: 心跳检测
+响应: {"status": "ok", "agent": "v2.0"}
+
+[GET] /sys/info
+描述: 获取静态硬件信息 (架构/CPU核心数等)，也回传了id字段。
+
+[GET] /sys/interfaces
+描述: 获取本机可用网卡列表
+响应: ["auto", "wlan0", "eth0", ...]
+
+[GET] /sys/config
+描述: 获取 Agent 当前配置
+响应: {"network_interface": "auto", "compressor_poll_ms": 5000}
+
+[POST] /sys/config
+描述: 修改配置 (会自动触发内部重启或重置定时器)
+Body: {"network_interface": "wlan0", "compressor_poll_ms": 1000}
+
+[GET] /sys/pubkey
+描述: 获取 RSA 公钥 (PEM)
+
+WebSocket stream: "system-stats"
+描述: 每隔 N 秒推送一次硬件状态
+Data 结构:
+{
+"cpu_usage": 12.5, // 百分比
+"mem_usage": 45.0, // 百分比
+"net_rx_rate": 1024.0, // 下载速率 B/s (前端需自行转 KB/s)
+"net_tx_rate": 2048.0, // 上传速率 B/s
+"temperature": 48.0, // 核心温度 (摄氏度)
+"disk_usage": 50.0 // 根目录占用率
+}
+
+B. 进程管理 (Process)
+
+[GET] /proc/list
+描述: 获取当前所有活跃进程列表 (用于同步 UI 状态)
+响应: {"count": 1, "processes": [{"id": "...", "cmd": "...", "pid": 1234, "start_time": "ISO8601..."}]}
+
+[POST] /proc/start
+描述: 启动一个进程。Agent 会自动探测 .launch 文件所在的工作空间并 source 对应的 setup.bash；若未找到则尝试注入用户 .bashrc 环境。
+Body:
+{
+"id": "my-slam-node",
+"cmd": "roslaunch",
+"args": ["my_pkg", "demo.launch"]
+}
+响应: {"status": "started", "setup": "/opt/ros/noetic/setup.bash"}
+
+[POST] /proc/stop
+描述: 停止指定进程 (发送 SIGINT)
+Body: {"id": "my-slam-node"}
+
+C. 远程终端 (Web Terminal)
+
+[WebSocket] ws://<robot-ip>:8080/ws/terminal
+描述: 建立一个全功能的 Bash 伪终端会话。
+协议:
+
+    Server -> Client: 二进制流 (Binary Message)。直接发给 xterm.js 解析。
+
+    Client -> Server: JSON 文本。
+
+上行 JSON 指令:
+
+    输入: {"type": "input", "data": "ls\r"}
+
+    调整大小: {"type": "resize", "cols": 100, "rows": 40}
+
+D. 文件系统 (Files)
+
+所有 POST 接口及 GET /read 均支持 X-Sudo-Password 头。
+
+[GET] /fs/places
+描述: 获取侧边栏导航 (常用目录 + 书签)
+响应: {"common": {"home": "...", "trash": "..."}, "bookmarks": [{"name": "...", "path": "..."}]}
+
+[GET] /fs/list
+描述: 列出目录内容
+参数: ?path=/home/user
+响应: [{"name": "a.txt", "size": 1024, "isDir": false, "mode": "-rw-r--r--"}, ...]
+
+[GET] /fs/read
+描述: 读取文件内容 (智能探测模式)
+参数: ?path=/home/user/a.txt
+逻辑:
+
+    Agent 读取文件前 512 字节。
+
+    如果检测到 0x00 或媒体 MIME 类型，视为二进制。
+
+    如果是文本，返回内容；如果是二进制，返回 MIME 类型供前端决定下载方式。
+    响应 (文本): {"is_binary": false, "content": "..."}
+    响应 (二进制): {"is_binary": true, "mime": "image/png", "size": 102400}
+
+[GET] /fs/download
+描述: 静态文件下载/流式预览
+参数: ?path=/home/user/video.mp4
+功能: 支持 Range 请求 (视频拖动)，前端可用 <img src="..."> 或 <video src="..."> 直接指向此 URL。
+
+[POST] /fs/write
+描述: 新建或保存文件 (支持 Sudo)
+Body: {"path": "/a.txt", "content": "hello"}
+
+[POST] /fs/mkdir
+描述: 创建目录 (支持 Sudo)
+Body: {"path": "/a/b"}
+
+[POST] /fs/copy
+描述: 复制文件或目录 (支持 Sudo, 递归)
+Body: {"src": "/a", "dst": "/b"}
+
+[POST] /fs/rename
+描述: 移动或重命名 (支持 Sudo, 跨分区)
+Body: {"src": "/a", "dst": "/b"}
+
+[POST] /fs/delete
+描述: 移入回收站 (符合 Linux XDG 标准，可还原)
+Body: {"path": "/a.txt"}
+
+[POST] /fs/delete/permanent
+描述: 永久删除 (支持 Sudo)
+Body: {"path": "/a.txt"}
+
+[POST] /fs/bookmark
+描述: 添加或删除书签
+Body: {"path": "/home/user/work", "action": "add"} (或 "remove")
+
+[POST] /fs/watch
+描述: 监控目录变更
+Body: {"path": "/home/user"}
+通知: 变更通过 WebSocket "fs-event" 推送，建议前端收到事件后重新调用 /fs/list 刷新。
+
+[POST] /fs/upload
+描述: 上传大文件。文件内容不再经过 JSON 序列化，而是直接通过 HTTP流 传输。支持 Sudo 提权（用于将文件直接写入系统目录）。
+Form Data (表单字段):
+file: [Binary] 文件二进制流。
+path: [String] 远程服务器上的保存绝对路径 (例如 /home/user/test.bag)。
+响应:
+成功: {"status": "uploaded", "size": 102400}
+失败: HTTP 500 {"error": "..."}
+
+E. ROS 基础设施 (Bridge)
+
+[POST] /ros/action
+描述: 手动控制系统级服务
+Body: {
+"service": "stack",   // 推荐使用 "stack" (全栈: roscore + compressor + bridge)
+// 也支持单体: "roscore", "foxglove"
+"action": "start"     // "start", "stop", "restart"
+}

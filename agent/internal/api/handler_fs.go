@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"ros-ground-control/agent/pkg/utils"
 	"slices"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
@@ -181,8 +183,14 @@ func RegisterFSRoutes(rg *gin.RouterGroup) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-		// 调用 MoveToTrash
-		if err := utils.MoveToTrash(req.Path); err != nil {
+		// 获取密码
+		pwd, err := getSudoPassword(c)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		// 传入密码
+		if err := service.MoveToTrash(req.Path, pwd); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
@@ -305,7 +313,7 @@ func RegisterFSRoutes(rg *gin.RouterGroup) {
 	})
 	// 13. 上传接口（流式）
 	rg.POST("/upload", func(c *gin.Context) {
-		// 1. 获取参数
+		// 1. 获取目标路径
 		dstPath := c.PostForm("path")
 		if dstPath == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Missing 'path' field"})
@@ -317,27 +325,76 @@ func RegisterFSRoutes(rg *gin.RouterGroup) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Missing 'file' field"})
 			return
 		}
-		// 3. 保存到临时目录 (/tmp)
-		// Gin 的 SaveUploadedFile 使用 io.Copy，内存占用小
-		tmpPath := filepath.Join(os.TempDir(), "agent-upload-"+filepath.Base(fileHeader.Filename))
-		if err := c.SaveUploadedFile(fileHeader, tmpPath); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Upload failed: " + err.Error()})
-			return
-		}
-		// 4. 获取 Sudo 密码 (如果有)
+		// 3. 获取 Sudo 密码
 		pwd, err := getSudoPassword(c)
 		if err != nil {
-			os.Remove(tmpPath) // 清理
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-		// 5. 移动到目标位置 (复用 MovePath，它支持 Sudo 和跨分区移动)
-		// 如果目标路径需要 Root 权限，MovePath 会使用 sudo mv
+		// 4. 确保目标父目录存在
+		dstDir := filepath.Dir(dstPath)
+		if _, err := os.Stat(dstDir); os.IsNotExist(err) {
+			if err := service.CreateDir(dstDir, pwd); err != nil {
+				fmt.Printf("[Upload Error] Failed to create dst dir: %v\n", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create directory: " + err.Error()})
+				return
+			}
+		}
+		// --- 修复核心：使用本地临时目录代替 /tmp ---
+		// 获取当前工作目录
+		cwd, _ := os.Getwd()
+		localTempDir := filepath.Join(cwd, "agent_temp_uploads")
+		// 确保本地临时目录存在 (0755 权限对当前用户是完全可写的)
+		if err := os.MkdirAll(localTempDir, 0755); err != nil {
+			fmt.Printf("[Upload Error] Failed to create local temp dir: %v\n", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Local temp dir error: " + err.Error()})
+			return
+		}
+		// 生成安全的临时文件名
+		safeFilename := fmt.Sprintf("%d-%s", time.Now().UnixNano(), filepath.Base(fileHeader.Filename))
+		tmpPath := filepath.Join(localTempDir, safeFilename)
+		// 确保函数退出时清理这个临时文件
+		defer func() {
+			os.Remove(tmpPath)
+			// 尝试清理临时目录 (如果为空)，保持环境整洁，忽略错误
+			os.Remove(localTempDir)
+		}()
+		// 5. 保存文件到本地临时目录
+		// 因为 localTempDir 是我们自己建立的，go run 用户拥有绝对所有权，不会报 permission denied
+		if err := c.SaveUploadedFile(fileHeader, tmpPath); err != nil {
+			fmt.Printf("[Upload Error] SaveUploadedFile failed: %v\n", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Save temp failed: " + err.Error()})
+			return
+		}
+		// 6. 移动到目标位置
+		// 复用 MovePath，它会处理跨分区 (Copy+Delete) 和 Sudo 提权
 		if err := service.MovePath(tmpPath, dstPath, pwd); err != nil {
-			os.Remove(tmpPath) // 确保清理
+			fmt.Printf("[Upload Error] MovePath failed: %v\n", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Move failed: " + err.Error()})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"status": "uploaded", "size": fileHeader.Size})
+	})
+	// 14. 从回收站还原
+	rg.POST("/restore", func(c *gin.Context) {
+		var req FileActionReq // 复用结构体 { "path": "..." }
+		if err := c.BindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
+		// 获取 Sudo 密码 (如果目标位置是系统目录，可能需要)
+		pwd, err := getSudoPassword(c)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
+		if err := service.RestoreFromTrash(req.Path, pwd); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"status": "restored"})
 	})
 }

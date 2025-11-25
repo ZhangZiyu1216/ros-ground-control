@@ -30,8 +30,24 @@ func (ac *AutoCompressor) Start() {
 	go ac.loop()
 }
 
-func (ac *AutoCompressor) Stop() {
-	close(ac.stopChan)
+// 增加 Shutdown 方法
+func (ac *AutoCompressor) Shutdown() {
+	// 1. 停止循环
+	select {
+	case <-ac.stopChan:
+		// 已经关闭了，不做处理
+	default:
+		close(ac.stopChan)
+	}
+	ac.mu.Lock()
+	defer ac.mu.Unlock()
+	// 2. 杀死所有由它启动的进程
+	for topic, procID := range ac.runningCompressors {
+		log.Printf("[AutoCompressor] Shutdown: stopping %s (%s)", procID, topic)
+		GlobalProcManager.StopProcess(procID)
+	}
+	// 3. 清空列表
+	ac.runningCompressors = make(map[string]string)
 }
 
 func (ac *AutoCompressor) loop() {
@@ -133,7 +149,7 @@ func (ac *AutoCompressor) startCompressor(topic string) {
 	}
 
 	// 获取环境
-	cfg, _ := GlobalROSManager.generateServiceConfig(IDRosCore) // 借用 roscore 的环境配置
+	cfg, _ := GlobalROSManager.GenerateConfigStub(IDRosCore) // 借用 roscore 的环境配置
 
 	procCfg := ProcessConfig{
 		ID:          procID,

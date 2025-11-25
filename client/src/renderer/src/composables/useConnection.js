@@ -17,7 +17,7 @@ export function useConnection() {
     return map
   })
 
-  // 2. 当前视图 ID (即 IP)
+  // 2. 当前视图 ID
   const currentBackendId = computed(() => store.activeID)
 
   // 3. 当前视图的大状态
@@ -49,7 +49,7 @@ export function useConnection() {
 
   // --- 核心方法 ---
 
-  // 根据 Settings 生成 ID (新架构下 ID 就是 IP)
+  // 根据 Settings 生成 Ip
   const generateIpFromSettings = (settings) => {
     return settings.ip || 'localhost'
   }
@@ -107,13 +107,17 @@ export function useConnection() {
     pendingAction.value = 'connect'
     try {
       // 调用 Agent 启动所有服务
-      await store.activeClient.api.post('/bridge/action', { service: 'all', action: 'start' })
+      await store.activeClient.api.post('/ros/action', {
+        service: 'stack',
+        action: 'start'
+      })
       ElMessage.success('已发送启动指令')
 
-      // 立即刷新一次状态，并在 1秒、2秒后各刷新一次 (因为启动需要时间)
-      store.refreshStatus(store.activeIp)
-      setTimeout(() => store.refreshStatus(store.activeIp), 1000)
-      setTimeout(() => store.refreshStatus(store.activeIp), 2000)
+      // 立即刷新一次状态，并在 1秒、2秒、4秒后各刷新一次 (因为启动需要时间)
+      store.refreshStatus(store.activeID)
+      setTimeout(() => store.refreshStatus(store.activeID), 1000)
+      setTimeout(() => store.refreshStatus(store.activeID), 2000)
+      setTimeout(() => store.refreshStatus(store.activeID), 4000)
     } catch (e) {
       ElMessage.error('启动服务失败: ' + e.message)
     } finally {
@@ -129,11 +133,14 @@ export function useConnection() {
     isActionInProgress.value = true
     pendingAction.value = 'disconnect'
     try {
-      await store.activeClient.api.post('/bridge/action', { service: 'all', action: 'stop' })
+      await store.activeClient.api.post('/ros/action', {
+        service: 'stack',
+        action: 'stop'
+      })
       ElMessage.success('已发送停止指令')
 
-      store.refreshStatus(store.activeIp)
-      setTimeout(() => store.refreshStatus(store.activeIp), 1000)
+      store.refreshStatus(store.activeID)
+      setTimeout(() => store.refreshStatus(store.activeID), 1000)
     } catch (e) {
       ElMessage.error('停止服务失败: ' + e.message)
     } finally {

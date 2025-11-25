@@ -18,6 +18,7 @@ import (
 const (
 	IDRosCore  = "sys-roscore"
 	IDFoxglove = "sys-foxglove"
+	IDStack    = "stack" // 定义全栈标识
 )
 
 type ROSManager struct {
@@ -103,7 +104,7 @@ func findPidByName(name string) (int, error) {
 
 // 辅助函数：统一生成配置
 // 根据 ID 生成对应的 ProcessConfig，并注入当前最新的 IP
-func (rm *ROSManager) generateServiceConfig(id string) (ProcessConfig, error) {
+func (rm *ROSManager) GenerateConfigStub(id string) (ProcessConfig, error) {
 	// 读取配置
 	cfg := config.GetConfig()
 	// 1. 传入指定的网卡名称
@@ -145,15 +146,12 @@ func init() {
 		if manual {
 			return
 		}
-
 		// 检查是否处于全局重启状态
 		if GlobalROSManager.isSystemRestarting() {
 			log.Printf("[ROS-Watchdog] System is restarting. Ignoring cascade exit of: %s", id)
 			return
 		}
-
 		log.Printf("[ROS-Watchdog] Process %s exited unexpectedly!", id)
-
 		// 根据死掉的进程 ID 决定策略
 		switch id {
 		case IDRosCore:
@@ -177,20 +175,16 @@ func (rm *ROSManager) handleCoreCrash() {
 	if rm.isSystemRestarting() {
 		return
 	}
-
 	log.Println("[ROS-Watchdog] CRITICAL: roscore crashed. Initiating full system restart...")
-
 	// 进入维护模式
 	// 任何由此引发的子进程崩溃都会被 Watchdog 忽略
 	rm.setRestarting(true)
 	defer func() {
 		log.Println("[ROS-Watchdog] ✅ Maintenance finished. System is responding.")
 		rm.setRestarting(false)
-
 		// 恢复服务 (StartDefaultServices 内部是异步的，所以这里可以直接调)
-		rm.StartDefaultServices()
+		rm.StartService(IDStack)
 	}()
-
 	// 3. 强制清理所有子服务
 	// 使用并发清理以加快速度
 	var wg sync.WaitGroup
@@ -198,60 +192,106 @@ func (rm *ROSManager) handleCoreCrash() {
 	go func() { defer wg.Done(); rm.StopService(IDFoxglove) }()
 	wg.Wait()
 	// 停止自动压缩监控
-	GlobalCompressor.Stop()
-
+	GlobalCompressor.Shutdown()
 	// 4. 等待端口释放
 	log.Println("[ROS-Watchdog] Waiting for ports to clear...")
 	time.Sleep(3 * time.Second) // 增加到 5s 确保 TIME_WAIT 结束
 }
 
-// StartDefaultServices 启动默认服务
-func (rm *ROSManager) StartDefaultServices() {
-	go func() {
-		log.Println("[ROS] Initializing default services...")
+// startRosCore 启动或接管 Roscore (同步方法)
+func (rm *ROSManager) startRosCore() error {
+	// 1. 检查端口占用
+	if rm.isPortOpen("localhost", "11311") {
+		log.Println("[ROS] roscore is already running (external).")
+		// 尝试接管
+		pid, err := findPidByName("rosmaster")
+		if err == nil && pid > 0 {
+			log.Printf("[ROS] Adopting existing rosmaster (PID: %d)", pid)
+			GlobalProcManager.AdoptExternalProcess(IDRosCore, "roscore (external)", pid)
+			return nil // 接管成功，视为启动成功
+		}
+		log.Println("[ROS] Warning: Port 11311 open but could not find rosmaster PID.")
+		// 虽然没找到PID，但端口通了，也算Ready，不阻断流程
+		return nil
+	}
+	// 2. 端口未占用，启动新的
+	cleanupZombie("roscore")
+	cleanupZombie("rosmaster")
+	cfg, err := rm.GenerateConfigStub(IDRosCore)
+	if err != nil {
+		return err
+	}
+	if err := GlobalProcManager.StartProcess(cfg); err != nil {
+		return fmt.Errorf("failed to start roscore: %v", err)
+	}
+	// 3. 等待就绪
+	log.Println("[ROS] Waiting for roscore...")
+	if !rm.waitForPort("localhost", "11311", 10*time.Second) {
+		return fmt.Errorf("roscore start timeout")
+	}
 
-		// 1. 检查 roscore 是否存在
-		if rm.isPortOpen("localhost", "11311") {
-			log.Println("[ROS] roscore is already running (external).")
-			// --- 尝试接管 ---
-			// 查找 rosmaster 的 PID (因为 roscore 只是脚本，rosmaster 才是本体)
-			pid, err := findPidByName("rosmaster")
-			if err == nil && pid > 0 {
-				log.Printf("[ROS] Adopting existing rosmaster (PID: %d)", pid)
-				// 将其加入 ProcessManager，ID 设为 sys-roscore
-				GlobalProcManager.AdoptExternalProcess(IDRosCore, "roscore (external)", pid)
-			} else {
-				log.Println("[ROS] Warning: Port 11311 open but could not find rosmaster PID.")
-			}
-		} else {
-			// 端口未占用，执行清理并启动新的
-			cleanupZombie("roscore")
-			cleanupZombie("rosmaster")
-			cfg, _ := rm.generateServiceConfig(IDRosCore)
-			if err := GlobalProcManager.StartProcess(cfg); err != nil {
-				log.Printf("[ROS] Failed to start roscore: %v", err)
+	return nil
+}
+
+// startFoxglove 启动 Foxglove Bridge (同步方法)
+func (rm *ROSManager) startFoxglove() error {
+	// 强制清理，确保配置生效
+	cleanupZombie("foxglove_bridge")
+	// 等待 OS 释放端口，防止 Address already in use
+	time.Sleep(1 * time.Second)
+	cfg, err := rm.GenerateConfigStub(IDFoxglove)
+	if err != nil {
+		return err
+	}
+	log.Println("[ROS] Starting managed foxglove_bridge...")
+	return GlobalProcManager.StartProcess(cfg)
+}
+
+// StartDefaultServices 启动默认服务
+func (rm *ROSManager) StartService(target string) error {
+	// 1. 全栈启动 (异步执行，防止阻塞 HTTP)
+	if target == IDStack || target == "" {
+		go func() {
+			log.Println("[ROS] Starting ROS Stack...")
+			// A. 启动 Roscore
+			if err := rm.startRosCore(); err != nil {
+				log.Printf("[ROS] Stack abort: %v", err)
 				return
 			}
-			log.Println("[ROS] Waiting for roscore...")
-			if !rm.waitForPort("localhost", "11311", 10*time.Second) {
-				log.Println("[ROS] Error: roscore timeout!")
-				return
+			log.Println("[ROS] roscore is ready.")
+			// B. 启动自动压缩
+			GlobalCompressor.Reset()
+			GlobalCompressor.Start()
+			// C. 启动 Bridge
+			if err := rm.startFoxglove(); err != nil {
+				log.Printf("[ROS] Bridge start failed: %v", err)
 			}
-		}
-		log.Println("[ROS] roscore is ready. Starting bridges...")
-		// 2. 清理并启动 Foxglove Bridge
-		cleanupZombie("foxglove_bridge")
-		// 稍微等待操作系统释放端口资源
-		time.Sleep(1 * time.Second)
-		// 启动 Foxglove Bridge
-		if cfg, err := rm.generateServiceConfig(IDFoxglove); err == nil {
-			GlobalProcManager.StartProcess(cfg)
-		}
-		// 3. 启动/重置自动压缩管理器
-		GlobalCompressor.Reset() // 防止重启时的残留
-		GlobalCompressor.Start() // 启动后台扫描协程
-		log.Println("[ROS] ros is ready.")
-	}()
+		}()
+		return nil // 立即返回，由后台协程处理
+	}
+	// 2. 单体启动 (同步执行，以便立即返回错误)
+	switch target {
+	case IDRosCore:
+		return rm.startRosCore()
+	case IDFoxglove:
+		// 注意：单体启动 bridge 时，我们假设 roscore 已经好了，或者用户知道自己在做什么
+		return rm.startFoxglove()
+	default:
+		log.Printf("[ROS] Unknown Start ID.")
+		return nil
+	}
+}
+
+func (rm *ROSManager) StopDefaultServices() {
+	log.Println("[ROS] Stopping ROS Stack...")
+	// 1. 停止自动压缩器 (停止监控并杀掉所有 republish)
+	GlobalCompressor.Shutdown()
+	// 2. 停止 Bridge
+	rm.StopService(IDFoxglove)
+	// 3. 停止 Roscore
+	rm.StopService(IDRosCore)
+
+	log.Println("[ROS] Stack stopped.")
 }
 
 // StopService 停止服务
@@ -267,7 +307,7 @@ func (rm *ROSManager) RestartService(id string) error {
 	// 2. 等待资源释放
 	time.Sleep(1 * time.Second)
 	// 3. 重新生成配置 (这会重新获取 IP)
-	cfg, err := rm.generateServiceConfig(id)
+	cfg, err := rm.GenerateConfigStub(id)
 	if err != nil {
 		return err
 	}

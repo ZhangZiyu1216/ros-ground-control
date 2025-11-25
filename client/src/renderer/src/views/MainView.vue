@@ -280,7 +280,6 @@ const {
   resetView,
   restoreViewFromSettings,
   disconnectBackend,
-  generateIpFromSettings,
   connectServices,
   stopServices
 } = useConnection()
@@ -337,10 +336,6 @@ const backendStatusProps = computed(() => {
 })
 
 // 列表项辅助函数
-function getExpectedId(item) {
-  return generateIpFromSettings(item.settings)
-}
-
 function getBackendDisplayName(item) {
   if (item.name) return item.name
   if (item.settings.mode === 'local') return 'Localhost'
@@ -491,14 +486,19 @@ async function handleConnectionApply(newSettings) {
 // 切换连接
 async function switchToBackend(item) {
   isPopoverVisible.value = false
-  const targetId = getExpectedId(item)
+  // 1. 查找 Store 中对应的 Client 对象
+  const client = findClientBySettings(item.settings)
+  const clientKey = client
+    ? client.id || Object.keys(robotStore.clients).find((k) => robotStore.clients[k] === client)
+    : null
 
   // 1. 如果已经是当前视角，不操作
-  if (currentBackendId.value === targetId) return
+  if (currentBackendId.value && clientKey === currentBackendId.value) return
 
   // 2. 如果目标已经是 Ready 状态，直接切换视角（无网络请求）
-  if (allSessionStatuses.value[targetId] === 'ready') {
-    switchView(targetId)
+  if (client && client.status === 'ready') {
+    // 这里的 clientKey 肯定是 UUID (因为 status 是 ready)
+    switchView(clientKey)
     connectionSettings.value = item.settings
     return
   }
@@ -537,14 +537,13 @@ async function switchToBackend(item) {
       }
       // C. 将刚才失败的那个连接状态置为“灰色” (Disconnected) 而不是“红色” (Failed)
       // 这样用户体验更好，不会一直看到错误的红灯
-      const client = findClientBySettings(item.settings)
-      if (client) {
-        const clientKey = Object.keys(robotStore.clients).find(
-          (k) => robotStore.clients[k] === client
+      const failedClient = findClientBySettings(item.settings)
+      if (failedClient) {
+        // 找到它在 Store 里的 Key (可能是临时 IP)
+        const failedKey = Object.keys(robotStore.clients).find(
+          (k) => robotStore.clients[k] === failedClient
         )
-        if (clientKey) {
-          robotStore.setClientStatus(clientKey, 'disconnected')
-        }
+        if (failedKey) robotStore.setClientStatus(failedKey, 'disconnected')
       }
     }, 3000)
   }

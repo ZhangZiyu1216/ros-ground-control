@@ -5,9 +5,9 @@
     <el-aside class="node-list-panel">
       <el-card
         v-for="node in nodes"
-        :key="node.name"
+        :key="node.id || node.name"
         class="node-card"
-        :class="{ 'is-editing': editingNodeName === node.name }"
+        :class="{ 'is-editing': editingNodeName === node.id }"
         @mouseover="node.showEdit = true"
         @mouseleave="node.showEdit = false"
       >
@@ -19,7 +19,7 @@
             <div class="header-row">
               <!-- 编辑模式的标题输入框 -->
               <el-input
-                v-if="editingNodeName === node.name"
+                v-if="editingNodeId === node.id"
                 v-model="form.name"
                 placeholder="Display Name"
                 size="small"
@@ -35,20 +35,20 @@
         <div class="card-body-content">
           <!-- 编辑模式 -->
           <el-button
-            v-if="editingNodeName === node.name"
+            v-if="editingNodeId === node.id"
             class="launch-path-button"
             @click="openFileBrowser"
           >
             {{ form.path || '选择启动文件' }}
           </el-button>
           <!-- 显示模式 -->
-          <p v-else class="launch-path">{{ node.path }}</p>
+          <p v-else class="launch-path">{{ getDisplayPath(node.args) }}</p>
         </div>
 
         <template #footer>
           <div class="card-footer">
             <!-- 编辑模式: 显示 Save/Cancel 按钮 -->
-            <div v-if="editingNodeName === node.name" class="footer-edit-actions">
+            <div v-if="editingNodeId === node.id" class="footer-edit-actions">
               <el-button type="primary" size="small" round @click="saveNode">保存</el-button>
               <el-button size="small" round @click="cancelEditing">取消</el-button>
             </div>
@@ -92,7 +92,7 @@
       </el-card>
 
       <!-- “新增节点”卡片 -->
-      <el-card v-if="editingNodeName === '__new__'" class="node-card is-editing">
+      <el-card v-if="editingNodeId === '__new__'" class="node-card is-editing">
         <template #header>
           <div class="card-header">
             <div class="header-row">
@@ -110,14 +110,14 @@
         </template>
         <div class="card-body-content">
           <el-button class="launch-path-button" @click="openFileBrowser">
-            {{ form.path || '选择launch文件' }}
+            {{ getDisplayPath(form.args) || '选择launch文件' }}
           </el-button>
         </div>
         <template #footer>
           <div class="card-footer">
             <div class="footer-edit-actions">
-              <el-button type="primary" size="small" @click="saveNode">添加</el-button>
-              <el-button size="small" @click="cancelEditing">取消</el-button>
+              <el-button type="primary" size="small" @click.stop="saveNode">添加</el-button>
+              <el-button size="small" @click.stop="cancelEditing">取消</el-button>
             </div>
           </div>
         </template>
@@ -173,221 +173,156 @@
 </template>
 
 <script setup>
+// #region 1. Imports
 import FileBrowser from './FileBrowser.vue'
-import { ref, onMounted, reactive, watch, computed, onUnmounted } from 'vue'
+import { ref, reactive, computed } from 'vue'
+import { useRobotStore } from '../store/robot'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Edit, Delete } from '@element-plus/icons-vue'
-import { useRobotStore } from '../store/robot'
-import { useStorage } from '@vueuse/core'
-import { v4 as uuidv4 } from 'uuid' // 如果没有装uuid，可用简易随机数替代
+// #endregion
 
+// #region 2. State & Store Connection
 const props = defineProps({
-  currentBackendId: { type: String, default: null }, // 即 IP
-  isCurrentBackendReady: { type: Boolean, default: false }
+  currentBackendId: String,
+  isCurrentBackendReady: Boolean
 })
 
-// 状态管理
 const robotStore = useRobotStore()
-const nodes = ref([]) // UI 绑定的节点列表
-// 本地缓存：Key 为 IP，Value 为节点列表。用于断线时回显。
-const nodesCache = useStorage('dashboard-nodes-cache', {})
-
-// 轮询定时器
-let statusPoller = null
+// 从 Store 中获取当前机器人的节点列表
+const nodes = computed(() => {
+  const client = robotStore.clients[props.currentBackendId]
+  return client ? client.nodes : []
+})
 
 // UI 状态
 const isFileBrowserVisible = ref(false)
 const browserInitialPath = ref('')
-const editingNodeName = ref(null)
+const editingNodeId = ref(null) // 使用 ID 判断编辑状态，新增用 '__new__'
 
 // 表单数据
 const form = reactive({
-  id: '', // Agent 需要唯一 ID
+  id: '',
   name: '',
-  path: ''
+  cmd: 'roslaunch',
+  args: [] // Agent 格式: ["/path/to/file.launch"]
 })
 
-// ----------------------------------------------------------------
-// 1. 核心数据加载逻辑 (Load & Sync)
-// ----------------------------------------------------------------
-
-// 将 Agent 的数据格式转换为 UI 格式
-// Agent: { id, name, args: ["/path/to.launch"], cmd: "roslaunch" }
-// UI:    { id, name, path: "/path/to.launch", status: "stopped" }
-const mapAgentToUi = (agentNodes) => {
-  return agentNodes.map((an) => ({
-    id: an.id || uuidv4(),
-    name: an.name,
-    path: an.args && an.args.length > 0 ? an.args[0] : '',
-    status: 'stopped' // 默认状态，后续由 pollStatus 更新
-  }))
-}
-
-const loadNodes = async () => {
-  const ip = props.currentBackendId
-  if (!ip) return
-
-  // 步骤 A: 先从本地缓存加载 (防止白屏)
-  if (nodesCache.value[ip]) {
-    nodes.value = nodesCache.value[ip].map((n) => ({ ...n, status: 'stopped' }))
-  } else {
-    nodes.value = []
+// 辅助显示：从 args 数组提取显示的路径字符串
+const getDisplayPath = (nodeArgs) => {
+  if (Array.isArray(nodeArgs) && nodeArgs.length > 0) {
+    return nodeArgs[0] // 默认取第一个参数作为路径显示
   }
-
-  // 步骤 B: 如果已连接，从 Agent 拉取最新配置并更新缓存
-  if (props.isCurrentBackendReady && robotStore.activeClient?.api) {
-    try {
-      const res = await robotStore.activeClient.api.get('/api/nodes')
-      if (Array.isArray(res)) {
-        // 转换数据
-        const remoteNodes = mapAgentToUi(res)
-
-        // 这里的策略是：以机器人端的配置为准 (Overwrite Local)
-        // 你也可以实现复杂的 Merge 逻辑，但 Overwrite 最稳健
-        nodes.value = remoteNodes
-
-        // 更新本地缓存 (剥离 status 字段，只存配置)
-        nodesCache.value[ip] = remoteNodes.map(({ status, ...rest }) => rest)
-
-        // 立即刷新一次运行状态
-        await pollStatus()
-      }
-    } catch (e) {
-      console.warn('Failed to sync nodes from agent:', e)
-      ElMessage.warning('无法同步节点配置，显示本地缓存')
-    }
-  }
+  return ''
 }
+// #endregion
 
-// ----------------------------------------------------------------
-// 2. 运行状态同步 (Process Status)
-// ----------------------------------------------------------------
-
-// 轮询当前运行的进程，更新 nodes 的 status
-const pollStatus = async () => {
-  if (!props.isCurrentBackendReady || !robotStore.activeClient?.api) return
-
-  try {
-    const res = await robotStore.activeClient.api.get('/proc/list')
-    const processes = res.processes || []
-
-    // 遍历 UI 上的节点，检查是否有对应的进程在运行
-    // 匹配规则：进程的 ID 等于节点的 Name (我们启动时会这样设置)
-    nodes.value.forEach((node) => {
-      // 正在启动中的节点(starting)不要立刻被覆盖为 stopped
-      if (node.status === 'starting') return
-
-      const isRunning = processes.some((p) => p.id === node.name)
-      node.status = isRunning ? 'running' : 'stopped'
-    })
-  } catch (e) {
-    // 静默失败，不要在轮询中弹窗
-    console.debug('Status poll failed', e)
-  }
-}
-
-// 启动轮询
-const startPoller = () => {
-  stopPoller()
-  // 1.5秒刷新一次状态
-  statusPoller = setInterval(pollStatus, 1500)
-}
-
-const stopPoller = () => {
-  if (statusPoller) {
-    clearInterval(statusPoller)
-    statusPoller = null
-  }
-}
-
-// ----------------------------------------------------------------
-// 3. 交互动作 (Action)
-// ----------------------------------------------------------------
-
-// 启动/停止节点
+// #region 3. Node Actions (Start/Stop)
 async function toggleNode(node) {
   if (!props.isCurrentBackendReady) return
 
-  if (node.status === 'running') {
-    // 停止: POST /proc/stop { id: node.name }
-    try {
-      node.status = 'stopping' // UI 乐观更新
-      await robotStore.activeClient.api.post('/proc/stop', { id: node.name })
-      // 等待下一次轮询更新状态，或者手动设为 stopped
-      node.status = 'stopped'
-    } catch (e) {
-      ElMessage.error(`停止失败: ${e.message}`)
-      node.status = 'running' // 回滚
+  try {
+    if (node.status === 'running') {
+      // 停止：传递 name (作为 process ID)
+      await robotStore.stopNodeProcess(props.currentBackendId, node.name)
+    } else {
+      // 启动
+      await robotStore.startNodeProcess(props.currentBackendId, node)
     }
-  } else {
-    // 启动: POST /proc/start
-    try {
-      node.status = 'starting' // UI loading
-      await robotStore.activeClient.api.post('/proc/start', {
-        id: node.name, // 使用 Name 作为进程 ID，方便通过 Name 停止
-        cmd: 'roslaunch',
-        args: [node.path] // 假设 path 就是 launch 文件全路径
-      })
-      // 注意：启动需要时间，保持 starting 状态，交给轮询器去变更为 running
-    } catch (e) {
-      ElMessage.error(`启动失败: ${e.message}`)
-      node.status = 'error'
-    }
+  } catch (e) {
+    ElMessage.error(`操作失败: ${e.message}`)
   }
 }
+// #endregion
 
-// 保存节点 (新增/编辑) -> 同步给 Agent
+// #region 4. CRUD Operations (Edit/Save/Delete)
+
+// 开始添加
+function startAdding() {
+  editingNodeId.value = '__new__'
+  form.id = ''
+  form.name = ''
+  form.cmd = 'roslaunch'
+  form.args = []
+}
+
+// 开始编辑
+function startEditing(node) {
+  editingNodeId.value = node.id
+  form.id = node.id
+  form.name = node.name
+  form.cmd = node.cmd
+  // 确保 args 是数组
+  form.args = Array.isArray(node.args) ? [...node.args] : [node.args]
+}
+
+// 取消
+function cancelEditing() {
+  editingNodeId.value = null
+}
+
+// 保存 (新增或更新)
 async function saveNode() {
-  if (!form.name || !form.path) {
-    ElMessageBox.error('名称和路径不能为空')
+  const pathStr = getDisplayPath(form.args)
+  if (!form.name || !pathStr) {
+    ElMessage.error('节点名称和启动文件路径不能为空。')
     return
   }
 
-  // 构造 Agent 需要的 payload
-  // 如果是新增模式 (__new__)，ID 设为空，由后端或这里生成均可，这里生成保险
-  const payload = {
-    id: editingNodeName.value === '__new__' || !form.id ? `node-${Date.now()}` : form.id,
+  // 查重
+  const isNameDuplicate = nodes.value.some((n) => n.name === form.name && n.id !== form.id)
+  if (isNameDuplicate) {
+    ElMessage.error('节点名称已存在，请使用唯一的名称。')
+    return
+  }
+  const isDuplicatePath = nodes.value.some(
+    (n) => getDisplayPath(n.args) === pathStr && n.id !== form.id
+  )
+  if (isDuplicatePath) {
+    ElMessage.error('该 Launch 文件已被其他节点使用。')
+    return
+  }
+
+  // 构造数据
+  const nodeData = {
+    id: form.id || `node-${Date.now()}`, // 如果是新节点，生成临时 ID
     name: form.name,
-    cmd: 'roslaunch',
-    args: [form.path],
-    description: 'Created by ROS Desktop'
+    cmd: form.cmd,
+    args: [pathStr], // 简单处理：目前只支持单个路径参数
+    description: ''
   }
 
   try {
-    // 发送给 Agent 保存
-    await robotStore.activeClient.api.post('/api/nodes', payload)
-    ElMessage.success('配置已保存')
-
-    // 重新加载列表 (最简单的同步方式)
-    await loadNodes()
+    await robotStore.saveNodeConfig(props.currentBackendId, nodeData)
+    // 保存成功后，显式重置表单并关闭编辑模式
+    // 这样可以防止下一次点击 "Add" 时带入旧数据
+    form.id = ''
+    form.name = ''
+    form.args = []
     cancelEditing()
+    // eslint-disable-next-line no-unused-vars
   } catch (e) {
-    ElMessage.error(`保存失败: ${e.message}`)
+    // 错误已在 Store 中处理，这里不做额外操作
   }
 }
 
-// 删除节点 -> 同步给 Agent
+// 删除
 async function deleteNode(node) {
-  if (!node.id) return // 理论上应该都有 ID
-
   try {
-    await ElMessageBox.confirm(`确定删除 "${node.name}"?`, '提示', { type: 'warning' })
+    await ElMessageBox.confirm(`确定要删除节点 "${node.name}" 吗？`, '删除确认', {
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+      type: 'warning'
+    })
 
-    // 调用 DELETE 接口
-    await robotStore.activeClient.api.delete('/api/nodes', { params: { id: node.id } })
-    ElMessage.success('已删除')
-
-    // 刷新
-    await loadNodes()
+    await robotStore.deleteNodeConfig(props.currentBackendId, node.id)
+    ElMessage.success('节点已删除')
   } catch (e) {
-    if (e !== 'cancel') ElMessage.error(`删除失败: ${e.message}`)
+    if (e !== 'cancel') ElMessage.error('删除失败')
   }
 }
+// #endregion
 
-// ----------------------------------------------------------------
-// 4. UI 辅助逻辑 (Keep mostly same)
-// ----------------------------------------------------------------
-
+// #region 5. File Browser Logic
 function getPosixDirname(filePath) {
   if (!filePath) return null
   const lastSlashIndex = filePath.lastIndexOf('/')
@@ -396,31 +331,10 @@ function getPosixDirname(filePath) {
   return filePath.substring(0, lastSlashIndex)
 }
 
-function startEditing(node) {
-  editingNodeName.value = node.name
-  form.id = node.id
-  form.name = node.name
-  form.path = node.path
-}
-
-function startAdding() {
-  if (!props.isCurrentBackendReady) {
-    ElMessage.warning('请先连接机器人')
-    return
-  }
-  editingNodeName.value = '__new__'
-  form.id = ''
-  form.name = ''
-  form.path = ''
-}
-
-function cancelEditing() {
-  editingNodeName.value = null
-}
-
 function openFileBrowser() {
-  if (form.path) {
-    browserInitialPath.value = getPosixDirname(form.path)
+  const currentPath = getDisplayPath(form.args)
+  if (currentPath) {
+    browserInitialPath.value = getPosixDirname(currentPath)
   } else {
     browserInitialPath.value = null
   }
@@ -428,63 +342,29 @@ function openFileBrowser() {
 }
 
 function handleFileSelected(filePath) {
-  if (filePath) form.path = filePath
+  if (filePath) {
+    // 将选择的路径放入 args 数组的第一个位置
+    form.args = [filePath]
+  }
   isFileBrowserVisible.value = false
 }
 
 function handleCancel() {
   isFileBrowserVisible.value = false
 }
+// #endregion
 
-// ----------------------------------------------------------------
-// 5. 生命周期与监听
-// ----------------------------------------------------------------
-
-// 监听 IP 变化
-watch(
-  () => props.currentBackendId,
-  async (newVal) => {
-    stopPoller()
-    if (newVal) {
-      await loadNodes() // 加载新机器的数据
-      if (props.isCurrentBackendReady) startPoller()
-    } else {
-      nodes.value = []
-    }
-  },
-  { immediate: true }
-)
-
-// 监听连接状态变化 (例如断线重连)
-watch(
-  () => props.isCurrentBackendReady,
-  (isReady) => {
-    if (isReady) {
-      loadNodes() // 连上后立即同步一次
-      startPoller()
-    } else {
-      stopPoller()
-      // 断线后，将所有节点状态置为 stopped (灰色)，表明无法控制
-      nodes.value.forEach((n) => (n.status = 'stopped'))
-    }
-  }
-)
-
-onUnmounted(() => {
-  stopPoller()
-})
-
-// 状态样式映射
+// #region 6. UI Helpers
 const statusType = (status) => {
   const map = {
     running: 'success',
     stopped: 'info',
-    starting: 'warning',
-    stopping: 'warning',
-    error: 'error'
+    error: 'error',
+    starting: 'warning'
   }
   return map[status] || 'info'
 }
+// #endregion
 </script>
 
 <style scoped>
