@@ -3,6 +3,9 @@ import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { Bonjour } from 'bonjour-service'
 import Store from 'electron-store'
+import editorWindowManager from './EditorWindowManager.js'
+import sshDiscovery from './SshDiscovery'
+import { deployAgent } from './AgentDeployer'
 
 import icon from '../../resources/icon.png'
 
@@ -101,6 +104,11 @@ app.whenReady().then(() => {
     return true
   })
 
+  // --- 编辑器窗口管理 ---
+  ipcMain.handle('open-file-editor', async (event, fileInfo) => {
+    await editorWindowManager.openFile(fileInfo)
+  })
+
   // --- 补全 Config 相关的 IPC ---
   ipcMain.handle('get-config', (event, key) => {
     return store.get(key)
@@ -110,8 +118,43 @@ app.whenReady().then(() => {
     return true
   })
 
+  // 广播通道
+  ipcMain.on('broadcast-backend-status', (event, payload) => {
+    console.log('[Main-IPC] Received broadcast request:', payload)
+
+    const windows = BrowserWindow.getAllWindows()
+    console.log(`[Main-IPC] Broadcasting to ${windows.length} windows`)
+
+    windows.forEach((win) => {
+      if (!win.isDestroyed()) {
+        win.webContents.send('backend-status-changed', payload)
+      }
+    })
+  })
+
+  // --- SSH 发现 IPC ---
+  ipcMain.handle('start-ssh-scan', () => {
+    sshDiscovery.startScan()
+    return true
+  })
+  ipcMain.handle('stop-ssh-scan', () => {
+    sshDiscovery.stopScan()
+    return true
+  })
+
+  // --- 部署 IPC ---
+  ipcMain.handle('deploy-agent', async (event, config) => {
+    // [修改] 传入 event.sender
+    return await deployAgent(config, event.sender)
+  })
+
   app.on('activate', function () {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
+  })
+
+  app.on('before-quit', () => {
+    sshDiscovery.destroy()
+    editorWindowManager.forceClose()
   })
 })
 

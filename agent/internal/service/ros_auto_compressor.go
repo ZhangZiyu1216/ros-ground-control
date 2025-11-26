@@ -89,33 +89,40 @@ func (ac *AutoCompressor) scanAndProcess() {
 		log.Printf("[AutoCompressor] Failed to get topic types: %v", err)
 		return
 	}
-	// 3. 找出需要压缩的话题
-	// 条件: 类型是 Image, 且对应的 /compressed 话题不存在
+	// 3. 获取有发布者的话题 (关键修复！)
+	// 只有在这个列表里的话题，才是真正“活着”的源数据
+	publishedTopics, err := client.GetPublishedTopics()
+	if err != nil {
+		return
+	}
+	// 4. 找出需要压缩的话题
+	// 条件: (Type == Image) AND (Has Publisher) AND (No Compressed Topic)
 	activeRawTopics := make(map[string]bool)
 
 	for topic, typ := range topicTypes {
-		if typ == ImageMsgType {
-			// 这是一个 Raw Image
+		// 必须是 Image 类型，且必须有活跃的发布者
+		if typ == ImageMsgType && publishedTopics[topic] {
 			activeRawTopics[topic] = true
-
-			// 检查是否已经有压缩版了
+			// 检查是否已有压缩版
 			compressedTopic := topic + "/compressed"
-			if _, exists := topicTypes[compressedTopic]; exists {
+			// 注意：我们要检查 compressedTopic 是否有发布者，而不仅仅是类型存在
+			// 如果 master 里有类型记录但没发布者，说明之前的压缩进程挂了，我们需要重启它
+			if publishedTopics[compressedTopic] {
 				continue
-			} else {
-				ac.startCompressor(topic)
 			}
+			// 启动压缩
+			ac.startCompressor(topic)
 		}
 	}
 
-	// 4. 清理无效的压缩进程
-	// 如果某个话题消失了（发布者退出了），我们也应该停止对应的压缩进程
+	// 5. 清理无效进程
 	ac.mu.Lock()
 	defer ac.mu.Unlock()
 
 	for topic, procID := range ac.runningCompressors {
+		// 如果话题不再活跃（没有发布者了），杀掉压缩进程
 		if !activeRawTopics[topic] {
-			log.Printf("[AutoCompressor] Topic %s disappeared. Stopping compressor %s", topic, procID)
+			log.Printf("[AutoCompressor] Topic %s lost publisher. Stopping compressor %s", topic, procID)
 			GlobalProcManager.StopProcess(procID)
 			delete(ac.runningCompressors, topic)
 		}

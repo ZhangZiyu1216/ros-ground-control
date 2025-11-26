@@ -11,8 +11,17 @@
           type="primary"
           circle
           :class="{ 'is-inactive': !isWindowFocused }"
+          @click="openEditorWindow"
+        >
+          <el-icon :size="16"> <EditPen /> </el-icon>
+        </el-button>
+        <el-divider direction="vertical" :class="{ 'is-inactive': !isWindowFocused }" />
+        <el-button
+          type="primary"
+          circle
+          :class="{ 'is-inactive': !isWindowFocused }"
           :disabled="isConnected"
-          @click="dialogVisible = true"
+          @click="showSettings = true"
         >
           <el-icon :size="16"> <Tools /> </el-icon>
         </el-button>
@@ -128,7 +137,7 @@
                   <div class="backend-actions" @click.stop>
                     <!-- 如果未运行，显示“删除”按钮 -->
                     <el-button
-                      v-if="!isBackendRunning(item)"
+                      v-if="!isBackendRunning(item) && !isDefaultLocalBackend(item)"
                       circle
                       type="danger"
                       link
@@ -150,7 +159,7 @@
                     </el-button>
                     <!-- 如果未运行，显示“编辑”按钮 -->
                     <el-button
-                      v-if="!isBackendRunning(item)"
+                      v-if="!isBackendRunning(item) && !isDefaultLocalBackend(item)"
                       circle
                       type="primary"
                       link
@@ -170,9 +179,34 @@
               <el-divider style="margin: 8px 0" />
 
               <!-- 添加新连接按钮 -->
-              <div class="add-backend-btn" @click.stop="openAddDialog">
-                <el-icon><Plus /></el-icon>
-                <span>添加新连接</span>
+              <div
+                class="add-buttons-wrapper"
+                @mouseenter="handleAddHover(true)"
+                @mouseleave="handleAddHover(false)"
+              >
+                <transition-group
+                  name="btn-slide"
+                  tag="div"
+                  class="add-buttons-container"
+                  :class="{ 'is-hovered': isHoveringAdd }"
+                >
+                  <!-- 1. 原有的“添加新连接”按钮 -->
+                  <!-- key 是 transition-group 必需的 -->
+                  <div key="add-new" class="add-backend-btn" @click.stop="openAddDialog">
+                    <el-icon><Plus /></el-icon>
+                    <span>添加新连接</span>
+                  </div>
+                  <!-- 2. 新增的“首次部署”按钮 -->
+                  <div
+                    v-if="showFirstTimeSetupButton"
+                    key="first-setup"
+                    class="add-backend-btn primary-style"
+                    @click.stop="openFirstTimeSetupDialog"
+                  >
+                    <el-icon><MagicStick /></el-icon>
+                    <span>首次连接</span>
+                  </div>
+                </transition-group>
               </div>
             </div>
           </el-popover>
@@ -215,6 +249,16 @@
     :initial-data="dialogInitialData"
     @apply="handleConnectionApply"
   />
+  <SettingsDialog
+    v-model="showSettings"
+    v-model:settings="appSettings"
+    @reset-config="handleAppReset"
+  />
+  <FirstTimeSetupDialog
+    v-model="isFirstTimeSetupDialogVisible"
+    :is-deploying="isDeploying"
+    @deploy="handleDeploy"
+  />
 </template>
 
 <script setup>
@@ -223,8 +267,9 @@ import { ref, onMounted, computed, watch, toRaw } from 'vue' // 新增 nextTick
 import Dashboard from './Dashboard.vue'
 import LogManager from './LogManager.vue'
 import TopicMonitor from './TopicMonitor.vue'
-import ConnectionDialog from './ConnectionDialog.vue'
-import { useStorage } from '@vueuse/core'
+import ConnectionDialog from '../components/ConnectionDialog.vue'
+import SettingsDialog from '../components/SettingsDialog.vue'
+import FirstTimeSetupDialog from '../components/FirstTimeSetupDialog.vue'
 import { useRobotStore } from '../store/robot.js'
 import { useConnection } from '../composables/useConnection.js'
 import { ElMessage, ElMessageBox, ElNotification } from 'element-plus'
@@ -242,9 +287,86 @@ import {
   Delete,
   Check,
   Plus,
-  SwitchButton
+  SwitchButton,
+  EditPen,
+  MagicStick
 } from '@element-plus/icons-vue'
 import logoURL from '../../../../resources/icon.png'
+
+// [新增] 全局应用设置
+const showSettings = ref(false)
+const defaultAppSettings = {
+  autoConnect: true, // 默认自动连接
+  autoStartRos: false, // 默认不自动启动服务
+  autoStopBridge: false, // 默认不自动停
+  autoStopRoscore: false
+}
+const appSettings = ref({ ...defaultAppSettings })
+
+// [新增] 监听设置变化并持久化
+watch(
+  appSettings,
+  (newVal) => {
+    window.api.setConfig('app_settings', toRaw(newVal))
+  },
+  { deep: true }
+)
+
+// [新增] 首次部署相关状态
+const showFirstTimeSetupButton = ref(false)
+const isFirstTimeSetupDialogVisible = ref(false)
+const isDeploying = ref(false) // 用于控制弹窗 loading
+const isHoveringAdd = ref(false)
+function handleAddHover(val) {
+  isHoveringAdd.value = val
+  showFirstTimeSetupButton.value = val
+}
+// [新增] 打开部署弹窗
+function openFirstTimeSetupDialog() {
+  isPopoverVisible.value = false // 关闭列表弹窗
+  isFirstTimeSetupDialogVisible.value = true
+}
+
+// 处理部署请求
+async function handleDeploy(sshSettings) {
+  isDeploying.value = true
+  try {
+    // 1. 调用主进程进行部署
+    const result = await window.api.deployAgent(sshSettings)
+
+    if (result.success) {
+      ElNotification({
+        title: '部署成功',
+        message: 'Agent 已安装并启动，正在尝试连接...',
+        type: 'success',
+        duration: 3000
+      })
+
+      isFirstTimeSetupDialogVisible.value = false
+
+      // 2. 自动打开“添加连接”对话框，并填入信息
+      const finalName = result.hostname || sshSettings.host
+
+      dialogMode.value = 'add'
+      dialogInitialData.value = {
+        mode: 'remote',
+        ip: sshSettings.host,
+        name: finalName, // UI 显示名称
+        hostname: finalName // Store 逻辑需要的 hostname
+      }
+
+      setTimeout(() => {
+        dialogVisible.value = true
+      }, 1000)
+    } else {
+      throw new Error(result.message)
+    }
+  } catch (e) {
+    ElMessage.error(`部署失败: ${e.message}`)
+  } finally {
+    isDeploying.value = false
+  }
+}
 
 // #region 2. State & Storage
 const activeTab = ref('dashboard')
@@ -259,11 +381,13 @@ const dialogInitialData = ref({ mode: 'remote', ip: '', name: '' })
 
 // 核心连接数据
 const savedBackends = ref([])
-const connectionSettings = useStorage('connection-settings', {
+const DEFAULT_SETTINGS = {
   mode: 'local',
   ip: '127.0.0.1',
-  name: 'Localhost'
-})
+  name: 'Localhost',
+  id: 'local'
+}
+const connectionSettings = ref({ ...DEFAULT_SETTINGS })
 
 // 引入 Composable
 const {
@@ -278,7 +402,6 @@ const {
   connect,
   switchView,
   resetView,
-  restoreViewFromSettings,
   disconnectBackend,
   connectServices,
   stopServices
@@ -308,8 +431,15 @@ const connectionModeText = computed(() => {
 // 连接按钮文本
 const connectionButtonText = computed(() => {
   if (isActionInProgress.value) {
-    return pendingAction.value === 'connect' ? '启动中...' : '关闭中...'
+    // 1. 显式操作 (用户点击了该按钮)
+    if (pendingAction.value === 'connect') return '启动中...'
+    if (pendingAction.value === 'disconnect') return '关闭中...'
+    // 2. 隐式操作 (由节点启动触发，或者 Store 后台 Loading)
+    // 根据当前状态反推意图：
+    // 如果现在没连接，那就是在启动；如果现在连着，那就是在停止
+    return serviceStatus.value === 'connected' ? '关闭中...' : '启动中...'
   }
+  // 空闲状态
   return isConnected.value ? '关闭ROS服务' : '启动ROS服务'
 })
 
@@ -371,37 +501,68 @@ function isBackendRunning(item) {
   const status = getItemStatus(item)
   return status === 'ready' || status === 'setting_up'
 }
+
+// 判断是否为默认 Localhost 配置（禁止编辑/删除）
+function isDefaultLocalBackend(item) {
+  if (!item || !item.settings) return false
+  const s = item.settings
+  return (
+    s.mode === 'local' && (s.id === 'local' || s.ip === '127.0.0.1') // 基于 id 或 IP 判断
+  )
+}
 // #endregion
 
 // #region 4. Interaction Handlers (点击事件)
 
-// 辅助：检查连接后是否发生了 IP 变更，并保存
+// 辅助：连接成功后，保存 IP 和 ID 到配置文件
 async function checkAndSaveIpChange() {
   const currentActiveID = robotStore.activeID
   const client = robotStore.clients[currentActiveID]
 
-  if (client && client.ipChanged && client.hostname) {
-    console.log('[MainView] Detected IP change via mDNS. Updating config...')
-
-    const savedItem = savedBackends.value.find((b) => b.settings.hostname === client.hostname)
+  // 只要连接成功 (client存在)，我们就应该尝试保存 UUID，不仅仅是 IP 变了才存
+  if (client) {
+    // 1. 在保存的列表中找到对应的项
+    // 优先用 hostname 匹配，其次用 IP 匹配
+    const savedItem = savedBackends.value.find(
+      (b) =>
+        (client.hostname && b.settings.hostname === client.hostname) || b.settings.ip === client.ip
+    )
     if (savedItem) {
-      const oldIp = savedItem.settings.ip
-      // 【修复】保存的是 client.ip (数字 IP)，而不是 currentActiveID (UUID)
-      savedItem.settings.ip = client.ip
-
-      if (connectionSettings.value.hostname === client.hostname) {
+      let hasChange = false
+      // 更新 IP
+      if (client.ipChanged || savedItem.settings.ip !== client.ip) {
+        savedItem.settings.ip = client.ip
+        hasChange = true
+      }
+      // [关键修复] 保存 UUID (id)
+      // 这样下次启动时，即使不连网也能找到缓存 Key
+      if (savedItem.settings.id !== currentActiveID) {
+        savedItem.settings.id = currentActiveID
+        hasChange = true
+      }
+      // 同步更新左下角的 connectionSettings
+      if (
+        connectionSettings.value.hostname === client.hostname ||
+        connectionSettings.value.ip === client.ip
+      ) {
         connectionSettings.value.ip = client.ip
+        connectionSettings.value.id = currentActiveID // [新增]
       }
 
-      await saveBackendsToStore()
-      ElNotification({
-        title: 'IP 地址已自动更新',
-        message: `机器人 ${client.hostname} 的 IP 已从 ${oldIp} 变更为 ${client.ip}。`, // 使用 client.ip
-        type: 'success',
-        duration: 3000
-      })
+      if (hasChange) {
+        await saveBackendsToStore()
+        console.log('Config saved with updated IP/ID')
+        // 如果是因为 IP 变了才进来的，提示一下；否则静默保存 ID
+        if (client.ipChanged) {
+          ElNotification({
+            title: '配置已更新',
+            message: `已更新机器人 ${client.hostname || client.ip} 的连接信息。`,
+            type: 'success'
+          })
+          client.ipChanged = false
+        }
+      }
     }
-    client.ipChanged = false
   }
 }
 
@@ -412,6 +573,10 @@ function openAddDialog() {
 }
 
 function openEditDialog(index, item) {
+  if (isDefaultLocalBackend(item)) {
+    ElMessage.warning('默认 Localhost 连接不能编辑。')
+    return
+  }
   if (isBackendRunning(savedBackends.value[index])) {
     ElMessage.warning('无法编辑正在运行的连接，请先断开。')
     return
@@ -514,6 +679,7 @@ async function switchToBackend(item) {
   try {
     await connect(item.settings)
     await checkAndSaveIpChange()
+    await handleAutoStartService()
     // 连接成功：connect 内部会自动 switchView，这里无需操作
     // eslint-disable-next-line no-unused-vars
   } catch (e) {
@@ -552,8 +718,12 @@ async function switchToBackend(item) {
 // 删除连接
 function deleteBackend(index) {
   const item = savedBackends.value[index]
-  if (isBackendRunning(item)) return
+  if (isDefaultLocalBackend(item)) {
+    ElMessage.warning('默认 Localhost 连接不能删除。')
+    return
+  }
 
+  if (isBackendRunning(item)) return
   ElMessageBox.confirm('确定删除此配置?', '警告', { type: 'warning' }).then(async () => {
     // 检查是否删除了当前显示的配置 (即使未连接)
     const isCurrent = JSON.stringify(item.settings) === JSON.stringify(connectionSettings.value)
@@ -584,6 +754,28 @@ async function handleManualDisconnect(item) {
     // 【修复】先找到 Client 对象，再获取其 Store Key
     const client = findClientBySettings(item.settings)
     if (client) {
+      const { autoStopBridge, autoStopRoscore } = appSettings.value
+      if (autoStopBridge || autoStopRoscore) {
+        try {
+          // 逻辑简化：
+          // 1. 如果配置了停止 Roscore，实际上就是停止全栈 (Stack)
+          if (autoStopRoscore) {
+            await client.api.post('/ros/action', { service: 'stack', action: 'stop' })
+            ElMessage.info('已自动停止 ROS 服务栈 (Roscore + Bridge)')
+          }
+          // 2. 否则，如果只配置了停止 Bridge
+          else if (autoStopBridge) {
+            // 停止 Foxglove 和 压缩服务
+            await client.api.post('/ros/action', { service: 'foxglove', action: 'stop' })
+            await client.api.post('/ros/action', { service: 'compressor', action: 'stop' })
+            ElMessage.info('已自动停止 Bridge')
+          }
+        } catch (err) {
+          console.warn('Auto-stop services failed:', err)
+          // 不阻断断开流程
+        }
+      }
+
       // 获取 Key (client.id 可能为空如果还在连接中，所以通过 activeClient 逻辑找 Key)
       // 在 Store 中，client 对象所在的 Key 就是我们需要传给 removeConnection 的参数
       const clientKey = Object.keys(robotStore.clients).find(
@@ -615,6 +807,7 @@ async function handleConfigButtonClick() {
       await connect(connectionSettings.value)
       await checkAndSaveIpChange()
       ElNotification({ title: '连接成功', type: 'success' })
+      await handleAutoStartService()
     } catch (e) {
       ElNotification({ title: '连接失败', message: e.message, type: 'error', duration: 3000 })
 
@@ -638,7 +831,25 @@ async function handleConfigButtonClick() {
 async function toggleServiceConnection() {
   if (isConnected.value) {
     try {
-      await ElMessageBox.confirm('确定停止所有 ROS 服务?', '警告', { type: 'warning' })
+      // [新增] 检查是否有正在运行的节点
+      const client = robotStore.clients[currentBackendId.value]
+      const runningCount =
+        client?.nodes?.filter((n) => n.status === 'running' || n.status === 'starting').length || 0
+
+      let confirmMsg = '确定停止所有 ROS 服务?'
+      let confirmType = 'warning'
+
+      if (runningCount > 0) {
+        confirmMsg = `检测到 ${runningCount} 个正在运行的节点。停止 ROS 服务将强制终止这些节点。确定要继续吗？`
+        confirmType = 'error' // 使用红色图标示警
+      }
+
+      await ElMessageBox.confirm(confirmMsg, '警告', {
+        confirmButtonText: '强制停止',
+        cancelButtonText: '取消',
+        type: confirmType
+      })
+
       await stopServices()
     } catch {
       /* cancel */
@@ -647,6 +858,26 @@ async function toggleServiceConnection() {
     await connectServices()
   }
 }
+
+// [新增] 自动启动服务处理
+async function handleAutoStartService() {
+  if (appSettings.value.autoStartRos) {
+    console.log('[AutoStart] Triggering ROS stack start...')
+    // 复用 useConnection 里的 connectServices
+    await connectServices()
+  }
+}
+
+const handleAppReset = async () => {
+  // 1. 清除配置
+  await window.api.setConfig('saved_backends', [])
+  await window.api.setConfig('last_connection_settings', null)
+  await window.api.setConfig('app_settings', null)
+  // 还需要清除所有节点的缓存
+  // 简单做法：重新加载窗口
+  location.reload()
+}
+
 // #endregion
 
 // #region 5. Lifecycle & Utils
@@ -658,41 +889,113 @@ const saveBackendsToStore = async () =>
 onMounted(async () => {
   window.api.onWindowFocusChanged((v) => (isWindowFocused.value = v))
 
-  // 读取并清洗配置
+  // 加载应用设置
+  const savedAppSettings = await window.api.getConfig('app_settings')
+  if (savedAppSettings) {
+    appSettings.value = { ...defaultAppSettings, ...savedAppSettings }
+  }
+
+  // 1. 读取配置
   const saved = await window.api.getConfig('saved_backends')
   let validConfigs = []
 
   if (Array.isArray(saved)) {
-    // 过滤旧数据
     validConfigs = saved.filter(
-      (item) =>
-        item.settings && (item.settings.mode === 'local' || item.settings.ip) && !item.settings.ssh
+      (item) => item.settings && (item.settings.mode === 'local' || item.settings.ip)
     )
   }
 
   if (validConfigs.length > 0) {
     savedBackends.value = validConfigs
   } else {
-    // 初始化默认列表
+    // 默认初始化
     const defaultLocal = {
       name: 'Localhost',
-      settings: { mode: 'local', ip: '127.0.0.1', name: 'Localhost' }
+      settings: { mode: 'local', ip: '127.0.0.1', name: 'Localhost', id: 'local' } // 默认给个 id
     }
     savedBackends.value = [defaultLocal]
     await saveBackendsToStore()
   }
 
-  // 确保 connectionSettings 也是有效的，无效则重置
+  if (window.api && window.api.broadcastBackendStatus) {
+    savedBackends.value.forEach((item) => {
+      // 确保有 ID 才能广播
+      const id = item.settings.id
+      if (id) {
+        window.api.broadcastBackendStatus({ id: id, status: 'disconnected' })
+      }
+    })
+  }
+
+  // 2. 恢复 ConnectionSettings
   if (connectionSettings.value.ssh) {
     connectionSettings.value = savedBackends.value[0].settings
   }
 
-  // 视图恢复与自动连接 (仅 Local)
-  restoreViewFromSettings(connectionSettings.value)
-  if (connectionSettings.value.mode === 'local') {
-    connect(connectionSettings.value).catch((e) => console.log('Auto-connect skipped:', e))
+  // 3. 离线状态“注水” (Hydrate Store)
+  // 如果当前选中的配置里有 UUID (id)，我们直接告诉 Store：“虽然没连网，但现在选中的是这个 ID”
+  // 这样 Dashboard 就能拿到 ID 去加载缓存了
+  const currentSettings = connectionSettings.value
+
+  // 尝试从 savedBackends 找最全的信息 (因为 useStorage 可能存的是旧的)
+  const matchedSaved = savedBackends.value.find(
+    (b) =>
+      (currentSettings.hostname && b.settings.hostname === currentSettings.hostname) ||
+      b.settings.ip === currentSettings.ip
+  )
+
+  if (matchedSaved && matchedSaved.settings.id) {
+    const uuid = matchedSaved.settings.id
+
+    // 在 Store 中初始化一个“离线”Client
+    if (!robotStore.clients[uuid]) {
+      robotStore.clients[uuid] = {
+        id: uuid,
+        ip: matchedSaved.settings.ip,
+        hostname: matchedSaved.settings.hostname,
+        name: matchedSaved.name,
+        status: 'disconnected', // 标记为离线
+        nodes: [], // 稍后 Dashboard 会填充它
+        serviceStatus: { roscore: 'unknown', bridge: 'unknown' }
+      }
+    }
+    // 设置活跃 ID -> 触发 Dashboard 的 watch -> 加载缓存
+    robotStore.activeID = uuid
+  }
+
+  // 4. 自动连接
+  const shouldAutoConnect = appSettings.value.autoConnect && connectionSettings.value.mode // 只要有有效配置就尝试
+
+  if (shouldAutoConnect) {
+    connect(connectionSettings.value)
+      .then(() => {
+        handleAutoStartService()
+      })
+      .catch((e) => console.log('Auto-connect skipped/failed:', e))
   }
 })
+
+// 监听 connectionSettings 变化并持久化到 electron-store
+watch(
+  connectionSettings,
+  (newVal) => {
+    // 使用 'last_connection_settings' 作为 key
+    window.api.setConfig('last_connection_settings', toRaw(newVal))
+  },
+  { deep: true }
+)
+// 监听 Store 中当前活跃 Client 的 ipChanged 标记
+watch(
+  () => {
+    if (!robotStore.activeClient) return false
+    return robotStore.activeClient.ipChanged
+  },
+  async (isChanged) => {
+    if (isChanged) {
+      await checkAndSaveIpChange()
+    }
+  }
+)
 
 // 状态指示器辅助
 const getStatusProps = (status) => {
@@ -706,20 +1009,14 @@ const getStatusProps = (status) => {
 const roscoreProps = computed(() => getStatusProps(roscoreStatus.value))
 const rosbridgeProps = computed(() => getStatusProps(rosbridgeStatus.value))
 
+// [新增] 打开编辑器函数
+function openEditorWindow() {
+  // 传空对象，表示只打开窗口不指定文件
+  window.api.openFileEditor({})
+}
+
 // 监听服务状态变更通知
 watch([roscoreStatus, rosbridgeStatus], ([newRscore, newRbridge], [oldRscore, oldRbridge]) => {
-  const wasConnected = oldRscore === 'connected' && oldRbridge === 'connected'
-  const isConnected = newRscore === 'connected' && newRbridge === 'connected'
-
-  if (!wasConnected && isConnected) {
-    ElNotification({
-      title: 'System Ready',
-      message: 'ROS 核心服务已就绪',
-      type: 'success',
-      duration: 2000
-    })
-  }
-
   const wasDisconnected = oldRscore !== 'connected' && oldRbridge !== 'connected'
   const isDisconnected = newRscore !== 'connected' && newRbridge !== 'connected'
 
@@ -756,6 +1053,7 @@ watch([roscoreStatus, rosbridgeStatus], ([newRscore, newRbridge], [oldRscore, ol
   padding: 0;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 .el-header.app-title-header {
   height: 50px;
@@ -926,6 +1224,87 @@ watch([roscoreStatus, rosbridgeStatus], ([newRscore, newRbridge], [oldRscore, ol
   margin-bottom: 8px;
   padding-left: 4px;
 }
+/* 容器 Wrapper */
+/* 增加这个 wrapper 是为了精确控制 hover 区域 */
+.add-buttons-wrapper {
+  padding: 5px 0; /* 给一点垂直内边距 */
+  min-height: 40px;
+}
+/* 按钮容器，现在是 transition-group 的子元素 */
+.add-buttons-container {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+/* 原始“添加”按钮样式 (保持不变) */
+.add-backend-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 8px;
+  cursor: pointer;
+  color: #606266;
+  font-size: 13px;
+  border-radius: 4px;
+  border: 1px dashed #dcdfe6;
+  white-space: nowrap;
+  box-sizing: border-box; /* 确保 padding 不会影响宽度计算 */
+  white-space: nowrap;
+  width: 100%;
+  transition: all 0.3s ease;
+}
+.add-backend-btn:hover,
+.add-backend-btn.primary-style:hover {
+  border-color: #409eff;
+  color: #409eff;
+  background-color: #ecf5ff;
+}
+.add-buttons-container.is-hovered .add-backend-btn {
+  width: calc(50% - 5px);
+}
+
+/* “首次部署”按钮的特殊样式 */
+.add-backend-btn.primary-style {
+  color: #606266;
+  font-size: 13px;
+  border-radius: 4px;
+  border: 1px dashed #dcdfe6;
+  white-space: nowrap;
+  box-sizing: border-box; /* 确保 padding 不会影响宽度计算 */
+  white-space: nowrap;
+}
+/* 定义进入和离开时的动画 */
+.btn-slide-enter-active {
+  transition: all 0.3s ease;
+  overflow: hidden;
+}
+.btn-slide-leave-active {
+  right: 0;
+  transition: all 0.3s ease;
+  overflow: hidden;
+}
+/* 进入前 和 离开后 的状态 */
+.btn-slide-enter-from {
+  opacity: 0;
+  transform: scale(0.8);
+  /* 初始宽度为0，让它平滑地“长”出来 */
+  width: 0;
+  padding: 0;
+  margin-left: 0 !important;
+}
+.btn-slide-leave-to {
+  opacity: 0;
+  transform: scale(0.8);
+  /* 目标宽度为0，让它平滑地“缩”回去 */
+  width: 0;
+  padding: 0;
+  margin-left: 0 !important;
+}
+.btn-slide-move {
+  transition: transform 0.3s ease;
+}
+
 /* 列表项样式 */
 .backend-item {
   display: flex;
@@ -981,25 +1360,7 @@ watch([roscoreStatus, rosbridgeStatus], ([newRscore, newRbridge], [oldRscore, ol
   color: #409eff;
   font-weight: bold;
 }
-/* 添加按钮样式 */
-.add-backend-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 8px;
-  border-radius: 6px;
-  cursor: pointer;
-  color: #606266;
-  font-size: 14px;
-  transition: all 0.2s;
-  border: 1px dashed #dcdfe6;
-}
-.add-backend-btn:hover {
-  border-color: #409eff;
-  color: #409eff;
-  background-color: #ecf5ff;
-}
+
 .status-dot-container {
   margin-right: 10px;
   display: flex;

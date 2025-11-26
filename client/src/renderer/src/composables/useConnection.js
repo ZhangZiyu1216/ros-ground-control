@@ -1,6 +1,6 @@
 import { computed, ref } from 'vue'
 import { useRobotStore } from '../store/robot'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElNotification } from 'element-plus'
 
 export function useConnection() {
   const store = useRobotStore()
@@ -45,7 +45,11 @@ export function useConnection() {
 
   // --- UI 交互状态 ---
   const pendingAction = ref(null)
-  const isActionInProgress = ref(false)
+  const localConnectionLoading = ref(false)
+  const isActionInProgress = computed(() => {
+    const stackLoading = store.activeClient ? store.activeClient.isStackLoading : false
+    return localConnectionLoading.value || stackLoading
+  })
 
   // --- 核心方法 ---
 
@@ -56,22 +60,37 @@ export function useConnection() {
 
   // 建立连接
   const connect = async (settings) => {
-    isActionInProgress.value = true
+    localConnectionLoading.value = true
     pendingAction.value = 'connect'
     try {
       await store.addConnection(settings)
+      if (window.api && window.api.broadcastBackendStatus) {
+        // 注意：这里使用 store.activeID，它是连接成功后的 UUID
+        window.api.broadcastBackendStatus({
+          id: store.activeID,
+          status: 'connected'
+        })
+      }
     } catch (e) {
       ElMessage.error(`连接失败: ${e.message}`)
       throw e
     } finally {
-      isActionInProgress.value = false
+      localConnectionLoading.value = false
       pendingAction.value = null
     }
   }
 
   // 断开连接 (从列表中移除)
   const disconnectBackend = async (key) => {
+    console.log(`[Connection] Disconnecting ${key}...`)
     store.removeConnection(key)
+
+    if (window.api && window.api.broadcastBackendStatus) {
+      console.log(`[Connection] Broadcasting disconnect signal for ${key}`)
+      window.api.broadcastBackendStatus({ id: key, status: 'disconnected' })
+    } else {
+      console.error('[Connection] API not found, cannot broadcast')
+    }
   }
 
   // 切换视图
@@ -83,68 +102,33 @@ export function useConnection() {
     store.activeID = null
   }
 
-  // 从缓存恢复视图 (用于页面刷新后，暂简单实现)
-  const restoreViewFromSettings = (settings) => {
-    if (settings && settings.ip) {
-      // 尝试在 clients 中找到匹配 IP 或 Hostname 的对象
-      const client = Object.values(store.clients).find(
-        (c) => c.ip === settings.ip || (settings.hostname && c.hostname === settings.hostname)
-      )
-      if (client) {
-        store.activeID =
-          client.id || Object.keys(store.clients).find((key) => store.clients[key] === client)
-      }
-    }
-  }
-
   // --- 服务控制 (REST API) ---
 
   // 启动服务 (调用 bridge start)
   const connectServices = async () => {
-    if (!store.activeClient || !store.activeClient.api) return
-
-    isActionInProgress.value = true
+    if (!store.activeID) return
+    // 这里不需要设置 localConnectionLoading，因为 store.isStackLoading 会自动触发 computed 更新
     pendingAction.value = 'connect'
     try {
-      // 调用 Agent 启动所有服务
-      await store.activeClient.api.post('/ros/action', {
-        service: 'stack',
-        action: 'start'
-      })
-      ElMessage.success('已发送启动指令')
-
-      // 立即刷新一次状态，并在 1秒、2秒、4秒后各刷新一次 (因为启动需要时间)
-      store.refreshStatus(store.activeID)
-      setTimeout(() => store.refreshStatus(store.activeID), 1000)
-      setTimeout(() => store.refreshStatus(store.activeID), 2000)
-      setTimeout(() => store.refreshStatus(store.activeID), 4000)
+      await store.controlRosStack(store.activeID, 'start')
+      ElNotification({ title: '启动成功', message: 'ROS 服务栈已完全启动', type: 'success' })
     } catch (e) {
-      ElMessage.error('启动服务失败: ' + e.message)
+      ElMessage.error('启动过程异常: ' + e.message)
     } finally {
-      isActionInProgress.value = false
       pendingAction.value = null
     }
   }
 
-  // 停止服务 (调用 bridge start)
   const stopServices = async () => {
-    if (!store.activeClient || !store.activeClient.api) return
+    if (!store.activeID) return
 
-    isActionInProgress.value = true
     pendingAction.value = 'disconnect'
     try {
-      await store.activeClient.api.post('/ros/action', {
-        service: 'stack',
-        action: 'stop'
-      })
-      ElMessage.success('已发送停止指令')
-
-      store.refreshStatus(store.activeID)
-      setTimeout(() => store.refreshStatus(store.activeID), 1000)
+      await store.controlRosStack(store.activeID, 'stop')
+      ElNotification({ title: '停止成功', message: 'ROS 服务已停止', type: 'info' })
     } catch (e) {
-      ElMessage.error('停止服务失败: ' + e.message)
+      ElMessage.error('停止过程异常: ' + e.message)
     } finally {
-      isActionInProgress.value = false
       pendingAction.value = null
     }
   }
@@ -163,7 +147,6 @@ export function useConnection() {
     switchView,
     resetView,
     generateIpFromSettings,
-    restoreViewFromSettings,
     connectServices,
     stopServices
   }

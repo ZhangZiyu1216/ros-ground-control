@@ -12,6 +12,53 @@ type ROSMasterClient struct {
 	ID     string
 }
 
+// GetPublishedTopics 获取当前有发布者的话题列表
+// 返回 map[TopicName]bool
+func (c *ROSMasterClient) GetPublishedTopics() (map[string]bool, error) {
+	// API: getSystemState(caller_id)
+	// Return: [code, status, [publishers, subscribers, services]]
+	// publishers: [ [topic, [node1, node2...]], ... ]
+
+	var result []interface{}
+	err := c.client.Call("getSystemState", c.ID, &result)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(result) < 3 {
+		return nil, fmt.Errorf("invalid response format")
+	}
+
+	stateList, ok := result[2].([]interface{})
+	if !ok || len(stateList) < 1 {
+		return nil, fmt.Errorf("system state format error")
+	}
+
+	// stateList[0] 是 publishers
+	pubs, ok := stateList[0].([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("publishers list format error")
+	}
+
+	activeTopics := make(map[string]bool)
+	for _, item := range pubs {
+		// item: [topic, [nodes...]]
+		pair, ok := item.([]interface{})
+		if !ok || len(pair) < 2 {
+			continue
+		}
+		topic := pair[0].(string)
+		nodes, _ := pair[1].([]interface{})
+
+		// 只有当节点列表不为空时，才算活跃
+		if len(nodes) > 0 {
+			activeTopics[topic] = true
+		}
+	}
+
+	return activeTopics, nil
+}
+
 // NewROSMasterClient 创建客户端
 // uri 例如: "http://localhost:11311"
 func NewROSMasterClient(uri string) (*ROSMasterClient, error) {

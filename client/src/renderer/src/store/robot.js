@@ -1,19 +1,23 @@
 import { defineStore } from 'pinia'
 import { ref, computed, reactive } from 'vue'
 import { createApi } from '../api/request'
-import { ElNotification } from 'element-plus'
+import { ElMessage, ElNotification } from 'element-plus'
 
 // --- 配置常量 ---
 const HEALTH_CHECK_INTERVAL = 1000
 const MAX_MISSED_HEARTBEATS = 3
 const AUTO_DISCONNECT_THRESHOLD = 15
-const MIN_CONNECTION_TIME = 600
+const MIN_CONNECTION_TIME = 500
 const HANDSHAKE_TIMEOUT = 500
 const MAX_CONNECT_RETRIES = 2
 
 export const useRobotStore = defineStore('robot', () => {
   const clients = reactive({})
   const activeID = ref(null)
+  const clipboard = ref(null) // 全局剪贴板，结构: { sourceId: 'uuid', path: '/a.txt', mode: 'copy'|'cut', name: 'a.txt', isDir: boolean }
+  const setClipboard = (data) => {
+    clipboard.value = data
+  }
 
   const activeClient = computed(() => (activeID.value ? clients[activeID.value] : null))
   const getCacheKey = (id) => `robot_nodes_cache_${id}` // --- 辅助：缓存 Key 生成 ---
@@ -65,52 +69,125 @@ export const useRobotStore = defineStore('robot', () => {
     })
   }
 
+  // 内部辅助：等待 ROS 服务就绪
+  const ensureRosStackReady = async (client) => {
+    if (client.serviceStatus.roscore === 'active' && client.serviceStatus.bridge === 'active') {
+      return
+    }
+    console.log('ROS services not ready, auto-starting...')
+    client.isStackLoading = true
+    try {
+      await client.api.post('/ros/action', { service: 'stack', action: 'start' })
+
+      let retries = 0
+      while (retries < 15) {
+        await sleep(1000)
+        const res = await client.api.get('/proc/list')
+        updateServiceStatusFromProcs(client, res.processes)
+        if (client.serviceStatus.roscore === 'active' && client.serviceStatus.bridge === 'active') {
+          return
+        }
+        retries++
+      }
+      throw new Error('ROS 服务启动超时')
+    } finally {
+      client.isStackLoading = false
+    }
+  }
+
   // --- 心跳逻辑 ---
   const startHealthCheck = (id) => {
+    // 注意：这里的参数 id 即 key
     const client = clients[id]
     if (!client) return
     if (client.timer) clearInterval(client.timer)
 
+    console.log(`[Heartbeat] Started for ID: ${id} (${client.ip})`)
+
     client.timer = setInterval(async () => {
+      // 0. 安全检查
       if (!clients[id] || client.status === 'disconnected') {
-        clearInterval(client.timer)
+        if (client.timer) clearInterval(client.timer)
         client.timer = null
         return
       }
+
       try {
+        // --- 正常心跳 ---
         const res = await client.api.get('/proc/list')
+
+        // 成功！
+        if (client.missedHeartbeats > 0) {
+          console.log(`[Heartbeat] Recovered after ${client.missedHeartbeats} misses.`)
+        }
         client.missedHeartbeats = 0
+
+        // 如果之前是 Failed (红色)，恢复为 Ready (绿色)
         if (client.status === 'failed') {
           client.status = 'ready'
           ElNotification({
             title: '连接恢复',
-            message: `${client.name || id} 已重连`,
+            message: `${client.name || client.hostname} 已自动重连`,
             type: 'success'
           })
         }
+
         updateServiceStatusFromProcs(client, res.processes)
         // eslint-disable-next-line no-unused-vars
       } catch (e) {
+        // --- 失败处理 ---
+        if (client.status === 'disconnected') return
+
         client.missedHeartbeats++
+        // 1. 变红 (Failed) - 短暂掉线
         if (client.missedHeartbeats >= MAX_MISSED_HEARTBEATS && client.status === 'ready') {
           client.status = 'failed'
           client.serviceStatus = { roscore: 'unknown', bridge: 'unknown' }
           ElNotification({
             title: '连接中断',
-            message: `与 ${client.name || id} 失去联系，正在尝试重连...`,
+            message: `与 ${client.name} 失去联系，正在尝试重连...`,
             type: 'error',
             duration: 3000
           })
         }
+
+        // 2. 【新增】尝试自动找回 IP (在变红期间)
+        // 条件：有 hostname，且处于 failed 状态，且每隔 4 次心跳尝试一次 (防止 mDNS 过于频繁)
+        if (client.status === 'failed' && client.hostname && client.missedHeartbeats % 4 === 0) {
+          console.log(`[Heartbeat] Attempting to recover IP for ${client.hostname}...`)
+
+          // 不 await，让它异步跑，不要阻塞心跳定时器
+          findNewIpByHostname(client.hostname).then((result) => {
+            // 如果找到了，且 IP 确实变了
+            if (result && result.ip && result.ip !== client.ip) {
+              console.log(`[Heartbeat] Auto-recovered IP! ${client.ip} -> ${result.ip}`)
+
+              // 立即更新内部状态
+              client.ip = result.ip
+              const baseUrl = `http://${result.ip}:8080/api`
+              client.api = createApi(baseUrl) // 替换 API 实例
+              client.ipChanged = true // 标记变更，通知 UI 保存
+
+              // 重置心跳计数，让下一次 tick 尝试新的 API
+              // (我们不手动设为 ready，让下一次真实心跳请求成功来设为 ready)
+              client.missedHeartbeats = 0
+            }
+          })
+        }
+
+        // 3. 变灰 (Disconnected) - 超时彻底放弃
         if (client.missedHeartbeats >= AUTO_DISCONNECT_THRESHOLD) {
+          if (client.status === 'disconnected') return
+          // 先清理定时器，防止后续重复执行
           clearInterval(client.timer)
           client.timer = null
+
           client.status = 'disconnected'
           ElNotification({
             title: '连接超时',
-            message: `${client.name || id} 已断开连接。`,
+            message: `${client.name} 已断开。`,
             type: 'info',
-            duration: 4000
+            duration: 3000
           })
         }
       }
@@ -136,18 +213,65 @@ export const useRobotStore = defineStore('robot', () => {
       client.nodes.forEach((node) => {
         // 匹配规则：进程 ID 等于 节点名称 (我们在 startNodeProcess 里是这么传的)
         const proc = processes.find((p) => p.id === node.name)
+        const now = Date.now()
+
         if (proc) {
-          node.status = 'running'
+          // --- 进程存在 ---
+          if (node.status === 'stopping') {
+            // [新增] 正在停止中，但进程还在
+            // 检查超时 (例如 5秒)
+            if (node._stopTime && now - node._stopTime > 5000) {
+              // 超时了还没死，可能卡住了，重置为 running
+              node.status = 'running'
+              node._stopTime = null
+            }
+            // 否则保持 'stopping' 状态，等待下一次心跳
+          } else {
+            // 正常运行
+            node.status = 'running'
+            node._startTime = null
+          }
         } else {
-          // 如果之前是 starting，可能还没启动完，不要立即置为 stopped，除非超时(需额外逻辑，暂简化)
-          // 这里简单处理：只要列表里没有，就是 stopped
-          // 为了防止 starting 瞬间变 stopped，可以加个 ignore 锁，或者依赖 Agent 响应速度
-          if (node.status !== 'starting') {
+          // --- 进程不存在 ---
+          if (node.status === 'starting') {
+            // 正在启动中，但进程还没出现
+            if (node._startTime && now - node._startTime > 5000) {
+              node.status = 'stopped' // 超时
+              node._startTime = null
+            }
+            // 否则保持 'starting'
+          } else {
+            // 只要进程没了，就视为 stopped (涵盖了 stopping -> stopped 的成功转换)
             node.status = 'stopped'
+            node._stopTime = null
           }
         }
       })
     }
+  }
+
+  // [新增] 同步初始化占位符 (防止 UI 闪烁)
+  const initClientPlaceholder = (settings) => {
+    // 这里的 id 就是 settings.id (UUID)
+    // 逻辑与 addConnection 开头类似，但它是纯同步的
+    let currentKey = settings.id || settings.ip
+
+    if (!clients[currentKey]) {
+      clients[currentKey] = {
+        id: settings.id,
+        ip: settings.ip,
+        hostname: settings.hostname,
+        name: settings.name,
+        status: 'setting_up', // 关键：初始状态设为连接中
+        api: null,
+        serviceStatus: { roscore: 'unknown', bridge: 'unknown' },
+        nodes: []
+      }
+    } else {
+      // 如果已存在，重置状态
+      clients[currentKey].status = 'setting_up'
+    }
+    activeID.value = currentKey
   }
 
   // --- addConnection ---
@@ -190,7 +314,8 @@ export const useRobotStore = defineStore('robot', () => {
         serviceStatus: { roscore: 'unknown', bridge: 'unknown' },
         missedHeartbeats: 0,
         timer: null,
-        ipChanged: false
+        ipChanged: false,
+        isStackLoading: false
       }
     } else {
       // 复用现有对象，更新状态为 loading
@@ -201,9 +326,9 @@ export const useRobotStore = defineStore('robot', () => {
 
     // 尝试加载本地缓存，防止界面空白
     try {
-      const cached = localStorage.getItem(getCacheKey(currentKey))
+      const cached = await loadNodesFromCache(currentKey)
       if (cached) {
-        clients[currentKey].nodes = JSON.parse(cached)
+        clients[currentKey].nodes = cached
       }
     } catch (e) {
       console.warn('Failed to load node cache', e)
@@ -243,7 +368,7 @@ export const useRobotStore = defineStore('robot', () => {
         } catch (e) {
           attempts++
           connectError = e
-          await sleep(500)
+          await sleep(200)
         }
       }
 
@@ -405,7 +530,7 @@ export const useRobotStore = defineStore('robot', () => {
           status: 'stopped' // 默认状态，后续通过 proc/list 更新真实状态
         }))
         // 更新缓存
-        localStorage.setItem(getCacheKey(clientId), JSON.stringify(client.nodes))
+        await window.api.setConfig(getCacheKey(clientId), JSON.parse(JSON.stringify(client.nodes)))
       }
     } catch (e) {
       console.error('Failed to sync nodes:', e)
@@ -414,6 +539,7 @@ export const useRobotStore = defineStore('robot', () => {
 
   // 2. 保存/更新节点 (Push & Cache)
   const saveNodeConfig = async (clientId, nodeData) => {
+    if (!clients[clientId]) loadNodesFromCache(clientId)
     const client = clients[clientId]
     // 先更新本地 UI (乐观更新)
     const existingIdx = client.nodes.findIndex((n) => n.id === nodeData.id)
@@ -423,7 +549,7 @@ export const useRobotStore = defineStore('robot', () => {
       client.nodes.push({ ...nodeData, status: 'stopped' })
     }
     // 更新缓存
-    localStorage.setItem(getCacheKey(clientId), JSON.stringify(client.nodes))
+    await window.api.setConfig(getCacheKey(clientId), JSON.parse(JSON.stringify(client.nodes))) // 确保去Proxy
 
     // 如果在线，发送给后端
     if (client.api && client.status === 'ready') {
@@ -442,7 +568,7 @@ export const useRobotStore = defineStore('robot', () => {
     const client = clients[clientId]
     // 本地删除
     client.nodes = client.nodes.filter((n) => n.id !== nodeId)
-    localStorage.setItem(getCacheKey(clientId), JSON.stringify(client.nodes))
+    await window.api.setConfig(getCacheKey(clientId), JSON.parse(JSON.stringify(client.nodes)))
 
     // 远程删除
     if (client.api && client.status === 'ready') {
@@ -470,13 +596,19 @@ export const useRobotStore = defineStore('robot', () => {
 
     // 乐观更新状态
     const target = client.nodes.find((n) => n.id === node.id)
-    if (target) target.status = 'starting'
+    if (target) {
+      target.status = 'starting'
+      target._startTime = Date.now() // [新增] 记录点击启动的时间戳
+    }
 
     try {
+      // [新增] 检查并自动启动 ROS 服务
+      await ensureRosStackReady(client)
+      // 服务就绪后，再启动节点
       await client.api.post('/proc/start', payload)
-      // 成功后不需要手动设为 running，心跳包 (proc/list) 会自动更新它
     } catch (e) {
       if (target) target.status = 'error'
+      ElMessage.error(`节点 ${node.name} 启动失败。`)
       throw e
     }
   }
@@ -485,8 +617,106 @@ export const useRobotStore = defineStore('robot', () => {
   const stopNodeProcess = async (clientId, nodeIdName) => {
     const client = clients[clientId]
     if (!client || !client.api) return
+    // [新增] 乐观更新：设为 stopping 并记录时间
+    const target = client.nodes.find((n) => n.name === nodeIdName)
+    if (target) {
+      target.status = 'stopping'
+      target._stopTime = Date.now() // 用于超时判断
+    }
 
     await client.api.post('/proc/stop', { id: nodeIdName })
+  }
+
+  // 从缓存加载节点 (用于 Dashboard 初始化显示)
+  const loadNodesFromCache = async (clientId) => {
+    if (!clientId) return []
+    // 1. 如果 Client 对象不存在，创建一个占位对象（离线模式）
+    if (!clients[clientId]) {
+      clients[clientId] = {
+        id: clientId,
+        status: 'disconnected', // 标记为离线
+        nodes: [],
+        serviceStatus: { roscore: 'unknown', bridge: 'unknown' }
+      }
+    }
+
+    // 2. 读取缓存
+    try {
+      const key = getCacheKey(clientId)
+      const cached = await window.api.getConfig(key)
+      if (cached && Array.isArray(cached)) {
+        clients[clientId].nodes = cached
+        return cached
+      }
+    } catch (e) {
+      console.warn('Cache load error:', e)
+    }
+    return []
+  }
+  // 12. [新增] 控制 ROS 服务栈 (Start/Stop)
+  const controlRosStack = async (clientId, action) => {
+    const client = clients[clientId]
+    if (!client || !client.api) return
+
+    client.isStackLoading = true
+    try {
+      // [新增] 如果是停止操作，先显式杀掉所有正在运行的节点
+      if (action === 'stop' && client.nodes) {
+        const stopPromises = []
+
+        client.nodes.forEach((n) => {
+          // 针对所有运行中或启动中的节点
+          if (n.status === 'running' || n.status === 'starting') {
+            // 1. UI 立即反馈为 "stopping"
+            n.status = 'stopping'
+            n._stopTime = Date.now()
+
+            // 2. 发送停止指令 (/proc/stop)
+            // 我们不 await 单个请求，而是收集 Promise 并行发送，提高速度
+            stopPromises.push(
+              client.api
+                .post('/proc/stop', { id: n.name })
+                .catch((e) => console.warn(`Failed to stop node ${n.name}:`, e))
+            )
+          }
+        })
+
+        // 等待所有节点停止指令发出
+        if (stopPromises.length > 0) {
+          await Promise.all(stopPromises)
+        }
+      }
+
+      // 发送 Stack 指令 (启动/停止 Roscore & Bridge)
+      await client.api.post('/ros/action', { service: 'stack', action: action })
+
+      // 轮询等待状态变更
+      const targetState = action === 'start' ? 'active' : 'inactive'
+
+      let retries = 0
+      while (retries < 15) {
+        // 15秒超时
+        await sleep(1000)
+        try {
+          const res = await client.api.get('/proc/list')
+          updateServiceStatusFromProcs(client, res.processes)
+
+          const { roscore, bridge } = client.serviceStatus
+
+          if (targetState === 'active') {
+            if (roscore === 'active' && bridge === 'active') break
+          } else {
+            if (roscore !== 'active' && bridge !== 'active') break
+          }
+          // eslint-disable-next-line no-unused-vars
+        } catch (e) {
+          /* ignore */
+        }
+        retries++
+      }
+    } finally {
+      client.isStackLoading = false
+    }
   }
 
   // --- 文件系统 (File System) Actions ---
@@ -571,48 +801,66 @@ export const useRobotStore = defineStore('robot', () => {
     await client.api.post('/fs/mkdir', { path: pathStr })
   }
 
-  // 4. 写文件 (Write - 用于新建空文件)
+  // 4. 读取文件内容
+  const fsReadFile = async (clientId, pathStr) => {
+    const client = clients[clientId]
+    if (!client || !client.api) throw new Error('连接未建立')
+
+    // 这里的 responseType 默认为 json，但我们需要 text
+    // 不过我们的 request.js 拦截器可能统一处理了 data
+    // 建议显式请求 transformResponse 或在后端保证返回格式
+    // 假设后端接口 /fs/read 返回 JSON: { is_binary: false, content: "..." }
+
+    const res = await client.api.get('/fs/read', { params: { path: pathStr } })
+
+    if (res.is_binary) {
+      throw new Error('无法编辑二进制文件')
+    }
+    return res.content
+  }
+
+  // 5. 写文件
   const fsWriteFile = async (clientId, pathStr, content = '') => {
     const client = clients[clientId]
     if (!client || !client.api) return
     await client.api.post('/fs/write', { path: pathStr, content })
   }
 
-  // 5. 重命名/移动 (Rename/Move)
+  // 6. 重命名/移动 (Rename/Move)
   const fsRename = async (clientId, src, dst) => {
     const client = clients[clientId]
     if (!client || !client.api) return
     await client.api.post('/fs/rename', { src, dst })
   }
 
-  // 6. 复制 (Copy)
+  // 7. 复制 (Copy)
   const fsCopy = async (clientId, src, dst) => {
     const client = clients[clientId]
     if (!client || !client.api) return
     await client.api.post('/fs/copy', { src, dst })
   }
 
-  // 7. 删除 (Delete/Trash)
+  // 8. 删除 (Delete/Trash)
   const fsDelete = async (clientId, pathStr) => {
     const client = clients[clientId]
     if (!client || !client.api) return
     await client.api.post('/fs/delete', { path: pathStr })
   }
 
-  // 8. 彻底删除
+  // 9. 彻底删除
   const fsDeletePermanent = async (clientId, pathStr) => {
     const client = clients[clientId]
     if (!client || !client.api) return
     await client.api.post('/fs/delete/permanent', { path: pathStr })
   }
 
-  // 9. 还原回收站文件
+  // 10. 还原回收站文件
   const fsRestore = async (clientId, pathStr) => {
     const client = clients[clientId]
     if (!client || !client.api) return
     await client.api.post('/fs/restore', { path: pathStr })
   }
-  // 10. 上传文件
+  // 11. 上传文件
   const fsUpload = async (clientId, { file, targetPath, onProgress }) => {
     const client = clients[clientId]
     if (!client || !client.api) throw new Error('Client not connected')
@@ -639,12 +887,70 @@ export const useRobotStore = defineStore('robot', () => {
       throw e
     }
   }
+  // 12. 智能粘贴 (支持同机/跨机)
+  const fsPaste = async (targetId, targetDir) => {
+    if (!clipboard.value) return
+
+    const { sourceId, path: srcPath, mode, name, isDir } = clipboard.value
+    const targetPath = `${targetDir}/${name}`.replace(/\/+/g, '/') // 简单拼接
+
+    // 情况 1: 同机操作 (直接调用 Agent 的复制/移动接口)
+    if (sourceId === targetId) {
+      if (mode === 'copy') {
+        await fsCopy(targetId, srcPath, targetPath)
+      } else if (mode === 'cut') {
+        await fsRename(targetId, srcPath, targetPath)
+        clipboard.value = null // 剪切后清空
+      }
+      return
+    }
+
+    // 情况 2: 跨机操作 (Client 中转: Download -> Upload)
+    // 注意：目前暂不支持跨机剪切(移动)，强制视为复制，或者是复制成功后再删除源文件
+    if (isDir) {
+      throw new Error('暂不支持跨机器人复制文件夹，请先压缩为文件。')
+    }
+
+    const srcClient = clients[sourceId]
+    const targetClient = clients[targetId]
+    if (!srcClient || !targetClient) throw new Error('源或目标机器已断开')
+
+    // 1. 下载 (获取 Blob)
+    // 注意：对于超大文件，这可能会占用前端内存。理想情况是在 Main 进程做 Stream Pipe，
+    // 但基于目前的 Axios 架构，Blob 是最快实现方式。
+    const downloadRes = await srcClient.api.get('/fs/download', {
+      params: { path: srcPath },
+      responseType: 'blob', // 关键
+      timeout: 0 // 下载大文件不超时
+    })
+
+    // 2. 上传
+    const formData = new FormData()
+    // 创建一个新的 File 对象
+    const fileObj = new File([downloadRes], name)
+    formData.append('file', fileObj)
+    formData.append('path', targetPath)
+
+    await targetClient.api.post('/fs/upload', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 0
+    })
+
+    // 3. 如果是剪切模式，且跨机传输成功，则删除源文件
+    if (mode === 'cut') {
+      await fsDelete(sourceId, srcPath) // 移入回收站比较安全
+      clipboard.value = null
+    }
+  }
 
   return {
     clients,
     activeID,
     activeClient,
     sudoPassword,
+    clipboard,
+    initClientPlaceholder,
+    setClipboard,
     setSudoPassword,
     addConnection,
     removeConnection,
@@ -655,15 +961,19 @@ export const useRobotStore = defineStore('robot', () => {
     deleteNodeConfig,
     startNodeProcess,
     stopNodeProcess,
+    loadNodesFromCache,
+    controlRosStack,
     fsGetSidebar,
     fsListDir,
     fsMkdir,
+    fsReadFile,
     fsWriteFile,
     fsRename,
     fsCopy,
     fsDelete,
     fsDeletePermanent,
     fsRestore,
-    fsUpload
+    fsUpload,
+    fsPaste
   }
 })

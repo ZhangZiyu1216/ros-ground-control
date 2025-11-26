@@ -36,33 +36,33 @@ func (rm *ROSManager) StartNetworkMonitor() {
 	log.Printf("[NetMon] Started. Interface: %s, IP: %s", cfg.NetworkInterface, rm.lastKnownIP)
 
 	go func() {
-		ticker := time.NewTicker(3 * time.Second) // 每 3 秒检查一次
+		ticker := time.NewTicker(3 * time.Second)
 		defer ticker.Stop()
 
 		for range ticker.C {
 			currentCfg := config.GetConfig()
 			currentIP := utils.GetOutboundIP(currentCfg.NetworkInterface)
 
-			// 忽略 127.0.0.1 (可能是网络切换中间状态，网卡掉线瞬间)
-			if currentIP == "127.0.0.1" {
+			// 忽略回环和无效 IP
+			if currentIP == "127.0.0.1" || currentIP == "" {
 				continue
 			}
 
-			// 如果 IP 发生了变化
 			if currentIP != rm.lastKnownIP {
 				log.Printf("[NetMon] ⚠️ IP Change detected! %s -> %s", rm.lastKnownIP, currentIP)
-
 				rm.lastKnownIP = currentIP
 
-				// 通知前端（可选，让前端弹出“网络切换中...”的提示）
+				// 1. 立即更新 mDNS，让前端能扫描到新 IP
+				connect.UpdateMDNS(currentIP)
+
+				// 2. 通知前端 (如果 WebSocket 还没断的话，虽然大概率已经断了)
 				connect.GlobalHub.Broadcast(connect.LogMessage{
 					ProcessID: "system",
 					Stream:    "system",
-					Data:      fmt.Sprintf("Network change detected (%s). Rebooting ROS system...", currentIP),
+					Data:      fmt.Sprintf("Network change detected (%s). System restarting...", currentIP),
 				})
 
-				// 触发全系统重启
-				// 注意：这里复用 handleCoreCrash 的逻辑，因为它本质上就是一次全清理+全重建
+				// 3. 重启 ROS 栈 (以绑定新 IP)
 				go rm.handleCoreCrash()
 			}
 		}

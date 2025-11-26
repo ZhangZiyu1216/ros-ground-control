@@ -9,7 +9,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
-	"text/template"
 
 	"ros-ground-control/agent/internal/api"
 	"ros-ground-control/agent/internal/connect"
@@ -19,17 +18,45 @@ import (
 	"ros-ground-control/agent/pkg/utils"
 )
 
-// Systemd 服务模板
-const serviceTemplate = `[Unit]
+func installService() {
+	// 1. 获取当前运行的用户 (Sudo 执行时，SUDO_USER 是实际用户，USER 是 root)
+	realUser := os.Getenv("SUDO_USER")
+	if realUser == "" {
+		log.Fatal("Error: Please run with sudo (e.g., sudo ./ros-agent -install)")
+	}
+
+	// 2. 确定安装目标路径
+	const installDir = "/usr/local/bin"
+	const binaryName = "ros-ground-control" // 统一安装后的名字
+	targetPath := filepath.Join(installDir, binaryName)
+
+	// 3. 自我复制 (Copy Self)
+	selfPath, _ := os.Executable()
+
+	fmt.Printf("[Install] Installing binary to %s...\n", targetPath)
+
+	// 读取自己
+	input, err := os.ReadFile(selfPath)
+	if err != nil {
+		log.Fatalf("Failed to read self: %v", err)
+	}
+	// 写入系统目录
+	if err := os.WriteFile(targetPath, input, 0755); err != nil {
+		log.Fatalf("Failed to copy binary to %s: %v", targetPath, err)
+	}
+
+	// 4. 生成 Systemd 文件
+	// 注意：ExecStart 指向新的系统路径
+	// 注意：User 设置为 realUser，确保以普通用户身份运行 (读取 ~/.config 和 ROS 环境)
+	const serviceContent = `[Unit]
 Description=ROS Ground Control Agent
 After=network.target network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User={{.User}}
-ExecStart={{.Path}}
-WorkingDirectory={{.Dir}}
+User=%s
+ExecStart=%s
 Restart=always
 RestartSec=3
 Environment=GIN_MODE=release
@@ -37,47 +64,19 @@ Environment=GIN_MODE=release
 [Install]
 WantedBy=multi-user.target
 `
+	serviceFile := fmt.Sprintf(serviceContent, realUser, targetPath)
 
-func installService() {
-	exePath, _ := os.Executable()
-	absPath, _ := filepath.Abs(exePath)
-	dir := filepath.Dir(absPath)
-	user := os.Getenv("USER")
-
-	if user == "" {
-		user = "root" // fallback
+	if err := os.WriteFile("/etc/systemd/system/ros-agent.service", []byte(serviceFile), 0644); err != nil {
+		log.Fatalf("Failed to write service file: %v", err)
 	}
 
-	data := struct {
-		User string
-		Path string
-		Dir  string
-	}{
-		User: user,
-		Path: absPath,
-		Dir:  dir,
-	}
-
-	// 1. 写入 /etc/systemd/system/ros-agent.service
-	// 注意：这需要 sudo 权限
-	f, err := os.Create("/etc/systemd/system/ros-agent.service")
-	if err != nil {
-		log.Fatalf("Failed to create service file (need sudo?): %v", err)
-	}
-	defer f.Close()
-
-	tmpl, _ := template.New("service").Parse(serviceTemplate)
-	tmpl.Execute(f, data)
-
-	fmt.Println("[Install] Service file created at /etc/systemd/system/ros-agent.service")
-
-	// 2. 重新加载 daemon 并启用服务
+	// 5. 启用服务
+	fmt.Println("[Install] Enabling systemd service...")
 	exec.Command("systemctl", "daemon-reload").Run()
 	exec.Command("systemctl", "enable", "ros-agent").Run()
-	exec.Command("systemctl", "start", "ros-agent").Run()
+	exec.Command("systemctl", "restart", "ros-agent").Run()
 
-	fmt.Println("[Install] Service enabled and started!")
-	fmt.Println("[Install] Check status with: systemctl status ros-agent")
+	fmt.Println("[Install] ✅ Success! Agent is running.")
 }
 
 func main() {
@@ -115,11 +114,11 @@ func main() {
 	preferredIP := utils.GetOutboundIP(cfg.NetworkInterface)
 	log.Printf("[Agent] Detected hostname: %s, Preferred IP: %s", hostname, preferredIP)
 
-	mdnsService, err := connect.StartMDNS(hostname, 8080, cfg.AgentID, preferredIP)
-	if err != nil {
-		log.Fatalf("Failed to start mDNS: %v", err)
+	if err := connect.StartMDNS(hostname, 8080, cfg.AgentID, preferredIP); err != nil {
+		log.Printf("Failed to start mDNS: %v", err)
 	}
-	defer mdnsService.Shutdown()
+	// 退出时清理
+	defer connect.Shutdown()
 
 	// 启动 WebSocket Hub 广播循环
 	go connect.GlobalHub.Run()

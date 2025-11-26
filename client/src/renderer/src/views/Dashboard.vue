@@ -3,93 +3,136 @@
   <el-container class="dashboard">
     <!-- 节点控制部分 -->
     <el-aside class="node-list-panel">
-      <el-card
+      <div
         v-for="node in nodes"
         :key="node.id || node.name"
-        class="node-card"
-        :class="{ 'is-editing': editingNodeName === node.id }"
-        @mouseover="node.showEdit = true"
+        class="node-wrapper"
+        @mouseenter="node.showEdit = true"
         @mouseleave="node.showEdit = false"
       >
-        <template #header>
-          <div class="card-header">
-            <div class="header-row">
-              <el-tag size="small" :type="statusType(node.status)" />
+        <el-card class="node-card" :class="{ 'is-editing': editingNodeId === node.id }">
+          <template #header>
+            <div class="card-header">
+              <div class="header-row">
+                <el-tag size="small" :type="statusType(node.status)" />
+              </div>
+              <div class="header-row">
+                <!-- 编辑模式的标题输入框 -->
+                <el-input
+                  v-if="editingNodeId === node.id"
+                  v-model="form.name"
+                  placeholder="Display Name"
+                  size="small"
+                  class="name-input"
+                />
+                <!-- 显示模式的标题 -->
+                <span v-else class="node-name">{{ node.name }}</span>
+              </div>
             </div>
-            <div class="header-row">
-              <!-- 编辑模式的标题输入框 -->
-              <el-input
-                v-if="editingNodeId === node.id"
-                v-model="form.name"
-                placeholder="Display Name"
-                size="small"
-                class="name-input"
-              />
-              <!-- 显示模式的标题 -->
-              <span v-else class="node-name">{{ node.name }}</span>
-            </div>
-          </div>
-        </template>
+          </template>
 
-        <!-- 卡片内容部分 -->
-        <div class="card-body-content">
-          <!-- 编辑模式 -->
-          <el-button
-            v-if="editingNodeId === node.id"
-            class="launch-path-button"
-            @click="openFileBrowser"
-          >
-            {{ form.path || '选择启动文件' }}
-          </el-button>
-          <!-- 显示模式 -->
-          <p v-else class="launch-path">{{ getDisplayPath(node.args) }}</p>
-        </div>
-
-        <template #footer>
-          <div class="card-footer">
-            <!-- 编辑模式: 显示 Save/Cancel 按钮 -->
-            <div v-if="editingNodeId === node.id" class="footer-edit-actions">
-              <el-button type="primary" size="small" round @click="saveNode">保存</el-button>
-              <el-button size="small" round @click="cancelEditing">取消</el-button>
-            </div>
-
-            <!-- 显示模式: 显示 启动/停止 和 编辑按钮 -->
-            <div v-else class="footer-display-actions">
-              <!-- 删除图标（和编辑图标同样式，因此使用一个class） -->
-              <el-button
-                v-show="node.showEdit"
-                class="delete-icon-btn"
-                :icon="Delete"
-                type="danger"
-                circle
-                link
-                @click="deleteNode(node)"
-              />
-              <!-- 编辑图标 -->
-              <el-button
-                v-show="node.showEdit"
-                class="edit-icon-btn"
-                :icon="Edit"
-                :disabled="!isCurrentBackendReady"
-                type="primary"
-                circle
-                link
-                @click="startEditing(node)"
-              />
-              <el-button
-                class="start-stop-btn"
-                :type="node.status === 'running' ? 'danger' : 'primary'"
-                :loading="node.status === 'starting'"
-                :disabled="node.status === 'starting' || !isCurrentBackendReady"
-                round
-                @click="toggleNode(node)"
-              >
-                {{ node.status === 'running' ? '停止' : '启动' }}
+          <!-- 卡片内容部分 -->
+          <div class="card-body-content">
+            <!-- 编辑模式 -->
+            <div v-if="editingNodeId === node.id" class="launch-edit-row">
+              <el-button class="launch-path-button" @click="openFileBrowser('launch')">
+                {{ getDisplayPath(form.args) || '选择启动文件' }}
               </el-button>
+              <!-- 编辑 Launch 内容按钮 -->
+              <el-tooltip content="编辑 Launch 文件" placement="top">
+                <el-button
+                  :icon="EditPen"
+                  type="primary"
+                  plain
+                  class="launch-content-edit-btn"
+                  :disabled="!getDisplayPath(form.args)"
+                  @click="openLaunchEditor"
+                />
+              </el-tooltip>
             </div>
+            <!-- 显示模式 -->
+            <p v-else class="launch-path">{{ getDisplayPath(node.args) }}</p>
           </div>
-        </template>
-      </el-card>
+
+          <template #footer>
+            <div class="card-footer">
+              <!-- 编辑模式: 显示 Save/Cancel 按钮 -->
+              <div v-if="editingNodeId === node.id" class="footer-edit-actions">
+                <el-button type="primary" size="small" round @click.stop="saveNode">保存</el-button>
+                <el-button size="small" round @click.stop="cancelEditing">取消</el-button>
+              </div>
+
+              <!-- 显示模式: 显示 启动/停止 和 编辑按钮 -->
+              <div v-else class="footer-display-actions">
+                <!-- 删除图标（和编辑图标同样式，因此使用一个class） -->
+                <el-button
+                  v-show="node.showEdit"
+                  class="delete-icon-btn"
+                  :icon="Delete"
+                  type="danger"
+                  circle
+                  link
+                  :disabled="!isCurrentBackendReady || node.status !== 'stopped'"
+                  @click.stop="deleteNode(node)"
+                />
+                <!-- 编辑图标 -->
+                <el-button
+                  v-show="node.showEdit"
+                  class="edit-icon-btn"
+                  :icon="Edit"
+                  :disabled="!isCurrentBackendReady || node.status !== 'stopped'"
+                  type="primary"
+                  circle
+                  link
+                  @click.stop="startEditing(node)"
+                />
+                <el-button
+                  class="start-stop-btn"
+                  :type="
+                    node.status === 'starting'
+                      ? 'primary'
+                      : node.status === 'stopping'
+                        ? 'danger'
+                        : node.status === 'running'
+                          ? 'danger'
+                          : 'primary'
+                  "
+                  :loading="node.status === 'starting' || node.status === 'stopping'"
+                  :disabled="
+                    node.status === 'starting' ||
+                    node.status === 'stopping' ||
+                    !isCurrentBackendReady
+                  "
+                  round
+                  @click="toggleNode(node)"
+                >
+                  {{
+                    node.status === 'starting'
+                      ? '启动'
+                      : node.status === 'stopping'
+                        ? '停止'
+                        : node.status === 'running'
+                          ? '停止'
+                          : '启动'
+                  }}
+                </el-button>
+              </div>
+            </div>
+          </template>
+        </el-card>
+
+        <!-- 2. 参数列表面板 (独立于 Card) -->
+        <el-collapse-transition>
+          <div v-show="node.showEdit && editingNodeId !== node.id" class="params-drawer">
+            <NodeParamsList
+              :node="node"
+              :backend-id="props.currentBackendId"
+              @update-node="handleNodeUpdate"
+              @pick-file="(param) => openFileBrowser('param', param)"
+            />
+          </div>
+        </el-collapse-transition>
+      </div>
 
       <!-- “新增节点”卡片 -->
       <el-card v-if="editingNodeId === '__new__'" class="node-card is-editing">
@@ -123,7 +166,12 @@
         </template>
       </el-card>
       <!-- “添加新节点”的占位符按钮 -->
-      <el-card v-else class="node-card add-new-card" @click="startAdding">
+      <el-card
+        v-else
+        class="node-card add-new-card"
+        :class="{ 'is-disabled': !isCurrentBackendReady }"
+        @click="startAdding"
+      >
         <span
           :style="{
             fontSize: '2.5vh',
@@ -149,36 +197,36 @@
     </el-main>
   </el-container>
   <el-dialog
-    v-model="isFileBrowserVisible"
+    v-model="fileBrowserContext.visible"
     class="file-browser-dialog"
     destroy-on-close
     :close-on-click-modal="false"
+    :show-close="false"
     draggable
-    :style="{
-      '--el-dialog-width': '75vw',
-      '--el-dialog-margin-top': '10vh'
-    }"
   >
-    <div v-if="isFileBrowserVisible" style="height: 75vh">
+    <div style="height: 100%; overflow: hidden">
       <FileBrowser
-        :initial-path="browserInitialPath"
+        :initial-path="fileBrowserContext.initialPath"
         :backend-id="props.currentBackendId"
         :allowed-extensions="['.launch', '.launch.xml']"
+        :show-close="true"
+        :hide-footer="false"
         @file-selected="handleFileSelected"
         @cancel="handleCancel"
+        @close="fileBrowserContext.visible = false"
       />
     </div>
-    <el-empty v-else description="主机连接未建立。" />
   </el-dialog>
 </template>
 
 <script setup>
 // #region 1. Imports
-import FileBrowser from './FileBrowser.vue'
-import { ref, reactive, computed } from 'vue'
+import FileBrowser from '../components/FileBrowser.vue'
+import NodeParamsList from '../components/NodeParamsList.vue' // [新增] 引入组件
+import { ref, reactive, computed, watch, onMounted } from 'vue'
 import { useRobotStore } from '../store/robot'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Edit, Delete } from '@element-plus/icons-vue'
+import { Edit, Delete, EditPen } from '@element-plus/icons-vue'
 // #endregion
 
 // #region 2. State & Store Connection
@@ -195,8 +243,13 @@ const nodes = computed(() => {
 })
 
 // UI 状态
-const isFileBrowserVisible = ref(false)
-const browserInitialPath = ref('')
+const fileBrowserContext = reactive({
+  visible: false,
+  initialPath: '',
+  allowedExtensions: [],
+  targetType: '', // 'launch' (节点本身) | 'param' (参数文件)
+  targetData: null // 存储临时的引用对象，例如 param 对象
+})
 const editingNodeId = ref(null) // 使用 ID 判断编辑状态，新增用 '__new__'
 
 // 表单数据
@@ -218,18 +271,12 @@ const getDisplayPath = (nodeArgs) => {
 
 // #region 3. Node Actions (Start/Stop)
 async function toggleNode(node) {
-  if (!props.isCurrentBackendReady) return
-
-  try {
-    if (node.status === 'running') {
-      // 停止：传递 name (作为 process ID)
-      await robotStore.stopNodeProcess(props.currentBackendId, node.name)
-    } else {
-      // 启动
-      await robotStore.startNodeProcess(props.currentBackendId, node)
-    }
-  } catch (e) {
-    ElMessage.error(`操作失败: ${e.message}`)
+  if (node.status === 'running') {
+    // Store 内部会设为 stopping
+    await robotStore.stopNodeProcess(props.currentBackendId, node.name)
+  } else {
+    // Store 内部会设为 starting 并检查 ROS 服务
+    await robotStore.startNodeProcess(props.currentBackendId, node)
   }
 }
 // #endregion
@@ -331,26 +378,80 @@ function getPosixDirname(filePath) {
   return filePath.substring(0, lastSlashIndex)
 }
 
-function openFileBrowser() {
-  const currentPath = getDisplayPath(form.args)
-  if (currentPath) {
-    browserInitialPath.value = getPosixDirname(currentPath)
-  } else {
-    browserInitialPath.value = null
+// 打开文件浏览器 (通用入口)
+// type: 'launch' | 'param'
+// data: 如果是 param，传入 param 对象引用
+function openFileBrowser(type, data = null) {
+  fileBrowserContext.targetType = type
+  fileBrowserContext.targetData = data
+
+  let currentPath = ''
+
+  if (type === 'launch') {
+    // 获取当前表单里的路径
+    currentPath = getDisplayPath(form.args)
+    fileBrowserContext.allowedExtensions = ['.launch', '.launch.xml']
+  } else if (type === 'param') {
+    // 获取参数对象的路径
+    currentPath = data.path
+    fileBrowserContext.allowedExtensions = [] // 不限制类型
   }
-  isFileBrowserVisible.value = true
+
+  // 计算父目录
+  fileBrowserContext.initialPath = getPosixDirname(currentPath) || null
+  fileBrowserContext.visible = true
 }
 
+// 处理文件选择 (根据上下文分发)
 function handleFileSelected(filePath) {
-  if (filePath) {
-    // 将选择的路径放入 args 数组的第一个位置
+  if (!filePath) return
+
+  if (fileBrowserContext.targetType === 'launch') {
+    // 1. 修改节点 Launch 文件
     form.args = [filePath]
+  } else if (fileBrowserContext.targetType === 'param') {
+    // 2. 修改参数文件
+    // 直接修改引用的对象
+    const param = fileBrowserContext.targetData
+    if (param) {
+      param.path = filePath
+      // 重新查找所属节点并保存 (因为 targetData 只是引用)
+      const parentNode = nodes.value.find((n) => n.params && n.params.includes(param))
+      if (parentNode) {
+        handleNodeUpdate(parentNode)
+      }
+    }
   }
-  isFileBrowserVisible.value = false
+
+  fileBrowserContext.visible = false
+}
+
+// 处理节点更新 (来自 NodeParamsList)
+async function handleNodeUpdate(updatedNode) {
+  // 调用 Store 保存
+  await robotStore.saveNodeConfig(props.currentBackendId, updatedNode)
+}
+
+// 直接打开编辑器 (Feature 4)
+async function openLaunchEditor() {
+  const path = getDisplayPath(form.args)
+  if (!path) return
+
+  try {
+    const fileName = path.split('/').pop()
+    await window.api.openFileEditor({
+      name: fileName,
+      path: path,
+      backendId: props.currentBackendId,
+      backendLabel: props.currentBackendId
+    })
+  } catch (e) {
+    ElMessage.error(e.message)
+  }
 }
 
 function handleCancel() {
-  isFileBrowserVisible.value = false
+  fileBrowserContext.visible = false
 }
 // #endregion
 
@@ -359,12 +460,30 @@ const statusType = (status) => {
   const map = {
     running: 'success',
     stopped: 'info',
+    crashed: 'error',
     error: 'error',
-    starting: 'warning'
+    starting: 'warning',
+    stopping: 'warning' // [新增] 停止中也显示黄色
   }
   return map[status] || 'info'
 }
 // #endregion
+
+onMounted(async () => {
+  if (props.currentBackendId) {
+    console.log('Dashboard mounted, loading nodes from cache...')
+    await robotStore.loadNodesFromCache(props.currentBackendId)
+  }
+})
+
+watch(
+  () => props.currentBackendId,
+  async (newId) => {
+    if (newId) {
+      await robotStore.loadNodesFromCache(newId)
+    }
+  }
+)
 </script>
 
 <style scoped>
@@ -382,12 +501,17 @@ const statusType = (status) => {
   width: 50%;
   height: 100%;
 }
-.node-list-panel .el-card {
+.node-wrapper {
+  margin-bottom: 15px; /* 卡片之间的间距移到这里 */
+  display: flex;
+  flex-direction: column;
+}
+.node-card {
   display: flex;
   align-items: center;
   border: rgba(144, 147, 153, 1);
   border-radius: 0px 40px 40px 0px;
-  height: 10%;
+  height: 75px;
   background-image: 
     /* 上层：内容背景色 (通常是白色，或者用 Element 的变量 var(--el-bg-color)) */
     linear-gradient(var(--el-bg-color), var(--el-bg-color)),
@@ -400,9 +524,21 @@ const statusType = (status) => {
   box-shadow: 0 2px 4px rgba(64, 158, 255, 0.15);
   transition: all 0.3s ease-out;
   margin-bottom: 10px;
+  z-index: 2;
 }
-.node-list-panel .el-card:hover {
+.node-card:hover {
   transform: scale(1.005); /* 保留之前的放大效果 */
+  margin-bottom: 0;
+}
+.node-card.has-params-open {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  border-bottom-color: transparent; /* 可选：隐藏底边框 */
+  box-shadow: 0 4px 12px 0 rgba(0, 0, 0, 0.1); /* 增加阴影 */
+}
+.params-drawer {
+  z-index: 1;
+  margin-top: -5px;
 }
 
 /* 头部容器样式 */
@@ -473,6 +609,9 @@ const statusType = (status) => {
 }
 .node-list-panel .el-card .card-header:deep(.el-tag--danger) {
   --el-tag-bg-color: rgb(234, 104, 104);
+}
+.node-list-panel .el-card .card-header:deep(.el-tag--warning) {
+  --el-tag-bg-color: rgb(230, 193, 45);
 }
 .node-list-panel .el-card .card-header:deep(.el-tag--info) {
   --el-tag-bg-color: rgb(173, 177, 182);
@@ -548,6 +687,11 @@ const statusType = (status) => {
   transform: scale(1.02);
   box-shadow: 1px 1px 1px rgba(0, 0, 0, 0.3);
 }
+.add-new-card.is-disabled {
+  cursor: not-allowed;
+  background-color: #f5f7fa;
+  border-color: #e4e7ed;
+}
 
 /* 内容部容器样式 */
 .node-list-panel .el-card :deep(.el-card__body) {
@@ -579,6 +723,24 @@ const statusType = (status) => {
   text-overflow: ellipsis; /* 超长时显示省略号 */
   word-break: break-all;
 }
+/* 编辑模式下的行布局 */
+.launch-edit-row {
+  display: flex;
+  gap: 5px;
+  width: 100%;
+}
+.launch-path-button {
+  flex-grow: 1;
+  /* 原有样式保持不变 */
+  justify-content: flex-start;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.launch-content-edit-btn {
+  flex-shrink: 0;
+  width: 32px;
+  padding: 0;
+}
 
 /* ------ 右侧功能容器样式 ------ */
 .el-main.function-panel {
@@ -600,5 +762,38 @@ const statusType = (status) => {
   flex-grow: 1;
   border: 2px dashed #e4e7ed;
   padding: 1% 1% 1% 1%;
+}
+</style>
+
+<style>
+.el-overlay-dialog:has(.file-browser-dialog) {
+  overflow: hidden !important;
+  display: flex; /* 配合下面的 margin auto 保证居中 */
+  align-items: center;
+  justify-content: center;
+}
+
+.file-browser-dialog {
+  margin: 0 !important;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  height: 75vh; /* 固定高度，或者 max-height: 90vh */
+  width: 75vw;
+  border-radius: 8px; /* 圆角更美观 */
+  overflow: hidden; /* 防止圆角被内部内容溢出遮挡 */
+}
+
+/* 隐藏 Element Plus 原生 Header */
+.file-browser-dialog .el-dialog__header {
+  display: none;
+}
+
+.file-browser-dialog .el-dialog__body {
+  flex: 1;
+  overflow: hidden;
+  padding: 0 !important; /* 移除内边距，由内部组件控制 */
+  border: 1px solid var(--el-border-color-light) !important;
+  height: 100%;
 }
 </style>
