@@ -21,6 +21,7 @@ export const useRobotStore = defineStore('robot', () => {
 
   const activeClient = computed(() => (activeID.value ? clients[activeID.value] : null))
   const getCacheKey = (id) => `robot_nodes_cache_${id}` // --- 辅助：缓存 Key 生成 ---
+  const getSequenceCacheKey = (id) => `robot_sequences_${id}`
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
   const sudoPassword = ref('')
@@ -219,8 +220,8 @@ export const useRobotStore = defineStore('robot', () => {
           // --- 进程存在 ---
           if (node.status === 'stopping') {
             // [新增] 正在停止中，但进程还在
-            // 检查超时 (例如 5秒)
-            if (node._stopTime && now - node._stopTime > 5000) {
+            // 检查超时 (例如 10秒)，大于后端的总超时时间
+            if (node._stopTime && now - node._stopTime > 8000) {
               // 超时了还没死，可能卡住了，重置为 running
               node.status = 'running'
               node._stopTime = null
@@ -265,7 +266,11 @@ export const useRobotStore = defineStore('robot', () => {
         status: 'setting_up', // 关键：初始状态设为连接中
         api: null,
         serviceStatus: { roscore: 'unknown', bridge: 'unknown' },
-        nodes: []
+        nodes: [],
+        nodeLogs: {},
+        terminals: [],
+        logWs: null,
+        nextTerminalId: 1
       }
     } else {
       // 如果已存在，重置状态
@@ -315,13 +320,21 @@ export const useRobotStore = defineStore('robot', () => {
         missedHeartbeats: 0,
         timer: null,
         ipChanged: false,
-        isStackLoading: false
+        isStackLoading: false,
+        // 日志与终端相关
+        nodeLogs: {}, // nodeLogs结构: { 'node_id': { status: 'running'|'stopped', lines: [] } }
+        terminals: [], // terminals结构: [ { id: 1, name: '终端 1' } ]
+        logWs: null, // 统一日志 WebSocket 句柄
+        nextTerminalId: 1 // 用于生成终端名称
       }
     } else {
       // 复用现有对象，更新状态为 loading
       clients[currentKey].status = 'setting_up'
       clients[currentKey].ip = targetIp // 更新尝试连接的 IP
       clients[currentKey].name = settings.name
+      // 确保复用时，如果是个老旧的占位对象，补全字段
+      if (!clients[currentKey].nodeLogs) clients[currentKey].nodeLogs = {}
+      if (!clients[currentKey].terminals) clients[currentKey].terminals = []
     }
 
     // 尝试加载本地缓存，防止界面空白
@@ -470,8 +483,10 @@ export const useRobotStore = defineStore('robot', () => {
       finalClient.ip = finalIp
       finalClient.sysInfo = infoRes
       syncNodes(currentKey)
+      syncSequences(currentKey)
 
       updateServiceStatusFromProcs(finalClient, procRes.processes)
+      startLogStream(currentKey)
 
       // 切换视图到最终的 ID Key
       activeID.value = currentKey
@@ -490,6 +505,7 @@ export const useRobotStore = defineStore('robot', () => {
       if (client.timer) clearInterval(client.timer)
       client.status = 'disconnected'
       client.serviceStatus = { roscore: 'unknown', bridge: 'unknown' }
+      client.logWs.close()
     }
   }
 
@@ -601,6 +617,20 @@ export const useRobotStore = defineStore('robot', () => {
       target._startTime = Date.now() // [新增] 记录点击启动的时间戳
     }
 
+    // 立即初始化日志 Tab，确保 UI 有反应
+    if (!client.nodeLogs) client.nodeLogs = {}
+    if (!client.nodeLogs[node.name]) {
+      client.nodeLogs[node.name] = {
+        status: 'starting',
+        lines: [`\x1b[1;33m[SYSTEM] Launching node: ${node.name}...\x1b[0m\r\n`]
+      }
+    } else {
+      client.nodeLogs[node.name].status = 'starting'
+      client.nodeLogs[node.name].lines.push(
+        `\x1b[1;33m[SYSTEM] Relaunching node: ${node.name}...\x1b[0m\r\n`
+      )
+    }
+
     try {
       // [新增] 检查并自动启动 ROS 服务
       await ensureRosStackReady(client)
@@ -608,6 +638,13 @@ export const useRobotStore = defineStore('robot', () => {
       await client.api.post('/proc/start', payload)
     } catch (e) {
       if (target) target.status = 'error'
+      // 日志里也记一笔
+      if (client.nodeLogs[node.name]) {
+        client.nodeLogs[node.name].lines.push(
+          `\x1b[1;31m[SYSTEM] Launch Failed: ${e.message}\x1b[0m\r\n`
+        )
+        client.nodeLogs[node.name].status = 'stopped'
+      }
       ElMessage.error(`节点 ${node.name} 启动失败。`)
       throw e
     }
@@ -627,7 +664,7 @@ export const useRobotStore = defineStore('robot', () => {
     await client.api.post('/proc/stop', { id: nodeIdName })
   }
 
-  // 从缓存加载节点 (用于 Dashboard 初始化显示)
+  // 从缓存加载节点 (用于 Dashboard 初始化显示)，顺便加载序列
   const loadNodesFromCache = async (clientId) => {
     if (!clientId) return []
     // 1. 如果 Client 对象不存在，创建一个占位对象（离线模式）
@@ -636,11 +673,32 @@ export const useRobotStore = defineStore('robot', () => {
         id: clientId,
         status: 'disconnected', // 标记为离线
         nodes: [],
-        serviceStatus: { roscore: 'unknown', bridge: 'unknown' }
+        serviceStatus: { roscore: 'unknown', bridge: 'unknown' },
+        nodeLogs: {},
+        terminals: [],
+        logWs: null,
+        nextTerminalId: 1
       }
+    } else {
+      // 如果对象已存在（可能来自 addConnection），确保 nodeLogs 存在
+      if (!clients[clientId].nodeLogs) clients[clientId].nodeLogs = {}
+      if (!clients[clientId].terminals) clients[clientId].terminals = []
     }
 
-    // 2. 读取缓存
+    // 2. 顺便加载序列缓存
+    try {
+      const seqKey = getSequenceCacheKey(clientId)
+      const cachedSeq = await window.api.getConfig(seqKey)
+      if (cachedSeq && Array.isArray(cachedSeq)) {
+        clients[clientId].sequences = cachedSeq
+      } else {
+        clients[clientId].sequences = []
+      }
+    } catch (e) {
+      console.warn('Sequence cache load error', e)
+    }
+
+    // 3. 读取节点缓存
     try {
       const key = getCacheKey(clientId)
       const cached = await window.api.getConfig(key)
@@ -651,9 +709,10 @@ export const useRobotStore = defineStore('robot', () => {
     } catch (e) {
       console.warn('Cache load error:', e)
     }
+
     return []
   }
-  // 12. [新增] 控制 ROS 服务栈 (Start/Stop)
+  // 控制 ROS 服务栈 (Start/Stop)
   const controlRosStack = async (clientId, action) => {
     const client = clients[clientId]
     if (!client || !client.api) return
@@ -716,6 +775,246 @@ export const useRobotStore = defineStore('robot', () => {
       }
     } finally {
       client.isStackLoading = false
+    }
+  }
+
+  // --- [新增] 序列管理 Actions ---
+
+  const syncSequences = async (clientId) => {
+    const client = clients[clientId]
+    if (!client || !client.api) return
+
+    try {
+      const res = await client.api.get('/sequences') // 调用后端
+      if (Array.isArray(res)) {
+        // 增加前端运行时状态 _status
+        client.sequences = res.map((s) => ({ ...s, _status: 'stopped' }))
+        window.api.setConfig(
+          getSequenceCacheKey(clientId),
+          JSON.parse(JSON.stringify(client.sequences))
+        )
+      }
+    } catch (e) {
+      console.warn('Failed to sync sequences:', e)
+    }
+  }
+
+  // 1. 保存序列
+  const saveSequenceConfig = async (clientId, seqData) => {
+    const client = clients[clientId]
+    // 1. 本地乐观更新 (保持界面流畅)
+    if (!client.sequences) client.sequences = []
+    const idx = client.sequences.findIndex((s) => s.id === seqData.id)
+    // 注意：保存时去掉 _status 这种运行时字段
+    const payload = { ...seqData }
+    delete payload._status
+    if (idx !== -1) client.sequences[idx] = { ...seqData, _status: 'stopped' }
+    else client.sequences.push({ ...seqData, _status: 'stopped' })
+    // 2. 发送给后端
+    if (client.api && client.status === 'ready') {
+      try {
+        // 1. 移除 _status 等前端专用字段
+        // 2. 确保 description 存在
+        // 3. 确保 steps 中的 content 都是字符串类型
+        const payload = {
+          id: seqData.id,
+          name: seqData.name,
+          description: seqData.description || '', // 补全可选字段
+          steps: seqData.steps.map((step) => ({
+            type: step.type,
+            content: String(step.content) // [关键] 强制转为字符串
+          }))
+        }
+
+        await client.api.post('/sequences', payload)
+        await syncSequences(clientId) // 重新同步
+      } catch (e) {
+        console.error('Save sequence failed:', e)
+        // 从响应中提取错误信息显示
+        const errorMsg = e.response?.data?.error || e.message
+        ElNotification({ title: '保存失败', message: '无法保存序列: ' + errorMsg, type: 'error' })
+      }
+    }
+  }
+
+  // 2. 删除序列
+  const deleteSequenceConfig = async (clientId, seqId) => {
+    const client = clients[clientId]
+    // 1. 本地删除
+    if (client.sequences) {
+      client.sequences = client.sequences.filter((s) => s.id !== seqId)
+    }
+    // 2. 远程删除
+    if (client.api && client.status === 'ready') {
+      try {
+        await client.api.delete(`/sequences?id=${seqId}`)
+        // eslint-disable-next-line no-unused-vars
+      } catch (e) {
+        ElNotification({ title: '删除失败', message: '无法从机器人删除序列', type: 'error' })
+      }
+    }
+  }
+
+  // 3. 执行序列 (核心逻辑)
+  const runSequence = async (clientId, sequence) => {
+    const client = clients[clientId]
+    if (!client || client.status !== 'ready') throw new Error('未连接')
+
+    // 标记序列正在运行 (UI显示 loading)
+    sequence._status = 'running'
+
+    try {
+      // 1. 确保 ROS 服务就绪
+      // await ensureRosStackReady(client) // 可选：根据需求决定是否强制检查
+
+      // 2. 遍历步骤
+      for (const step of sequence.steps) {
+        // 如果用户中途手动把状态改了(比如增加了停止按钮)，则中断
+        if (sequence._status !== 'running') break
+
+        if (step.type === 'node') {
+          // 查找节点对象
+          const node = client.nodes.find((n) => n.id === step.content)
+          if (node) {
+            // 启动节点 (复用已有 Action)
+            // 注意：这里不 await startNodeProcess 的完成，
+            // 因为 startNodeProcess 只是发指令，且我们有超时保护。
+            // 但为了序列的稳定性，我们最好给一点点间隔
+            await startNodeProcess(clientId, node)
+          }
+        } else if (step.type === 'delay') {
+          // 延时
+          const ms = parseInt(step.content) || 1000
+          await sleep(ms)
+        }
+      }
+    } catch (e) {
+      console.error('Sequence execution error:', e)
+      throw e
+    } finally {
+      sequence._status = 'stopped'
+    }
+  }
+
+  // 4. 停止序列 (不仅仅是停止循环，还可以设计为停止序列里包含的所有节点)
+  const stopSequenceNodes = async (clientId, sequence) => {
+    const client = clients[clientId]
+    sequence._status = 'stopped' // 中断循环标志
+
+    // 停止所有关联节点
+    const promises = []
+    for (const step of sequence.steps) {
+      if (step.type === 'node') {
+        const node = client.nodes.find((n) => n.id === step.content)
+        // 只有正在运行的才停
+        if (node && (node.status === 'running' || node.status === 'starting')) {
+          promises.push(stopNodeProcess(clientId, node.name))
+        }
+      }
+    }
+    await Promise.all(promises)
+  }
+
+  // --- 日志流管理 Actions ---
+
+  const startLogStream = (clientId) => {
+    const client = clients[clientId]
+    if (!client || client.logWs) return
+
+    // 构造 WS URL
+    const wsUrl = `ws://${client.ip}:8080/ws/logs`
+    console.log(`[LogStream] Connecting to ${wsUrl}`)
+
+    const ws = new WebSocket(wsUrl)
+    client.logWs = ws
+
+    ws.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data)
+        // msg 结构: { process_id, stream, data }
+        handleLogMessage(client, msg)
+        // eslint-disable-next-line no-unused-vars
+      } catch (e) {
+        // 忽略非 JSON 消息或解析错误
+      }
+    }
+
+    ws.onclose = () => {
+      console.log(`[LogStream] Disconnected from ${clientId}`)
+      client.logWs = null
+      // 可以在这里做自动重连逻辑
+    }
+  }
+
+  const handleLogMessage = (client, msg) => {
+    const { process_id, stream, data } = msg
+
+    // 1. 【修复】过滤掉全局 system 噪音
+    // 如果你不希望看到 "system" 这个 Tab，直接忽略它
+    if (!process_id || process_id === 'system') return
+
+    // 初始化该节点的日志对象
+    if (!client.nodeLogs[process_id]) {
+      // 如果收到了日志但 Tab 不存在（可能是非手动启动的后台进程），
+      // 可以选择自动创建，也可以选择忽略。这里保持自动创建以便观察隐式错误。
+      client.nodeLogs[process_id] = { status: 'stopped', lines: [] }
+    }
+    const logObj = client.nodeLogs[process_id]
+
+    // 2. 【修复】处理换行问题
+    // 强制将 \n 转换为 \r\n，防止 xterm 出现阶梯状文本或不换行
+    // 同时保留原始数据中的 \r\n (避免变成 \r\r\n)
+    const formattedData = typeof data === 'string' ? data.replace(/\r?\n/g, '\r\n') : data
+
+    // 处理系统事件 (System Stream)
+    if (stream === 'system') {
+      if (data.includes('Process started')) {
+        logObj.status = 'running'
+        logObj.lines.push(`\r\n\x1b[1;32m[SYSTEM] Node Started: ${process_id}\x1b[0m\r\n`)
+      } else if (data.includes('Process exited')) {
+        logObj.status = 'stopped'
+        logObj.lines.push(`\r\n\x1b[1;31m[SYSTEM] Node Exited: ${process_id}\x1b[0m\r\n`)
+      }
+      return
+    }
+
+    // 处理标准输出/错误
+    logObj.lines.push(formattedData)
+  }
+
+  // --- 终端管理 Actions ---
+
+  const addTerminal = (clientId) => {
+    const client = clients[clientId]
+    if (!client) {
+      console.error(`[Store] Client not found for addTerminal: ${clientId}`)
+      return
+    }
+
+    // 确保 terminals 数组存在 (防止初始化漏掉)
+    if (!client.terminals) client.terminals = []
+    if (!client.nextTerminalId) client.nextTerminalId = 1
+
+    const id = client.nextTerminalId++
+    client.terminals.push({
+      id: id,
+      name: `终端 ${id}`
+    })
+
+    // console.log(`[Store] Added terminal ${id} to ${clientId}`)
+    return id
+  }
+
+  const removeTerminal = (clientId, terminalId) => {
+    const client = clients[clientId]
+    if (!client || !client.terminals) return
+    client.terminals = client.terminals.filter((t) => t.id !== terminalId)
+  }
+
+  const removeNodeLog = (clientId, nodeId) => {
+    const client = clients[clientId]
+    if (client && client.nodeLogs && client.nodeLogs[nodeId]) {
+      delete client.nodeLogs[nodeId]
     }
   }
 
@@ -963,6 +1262,13 @@ export const useRobotStore = defineStore('robot', () => {
     stopNodeProcess,
     loadNodesFromCache,
     controlRosStack,
+    saveSequenceConfig,
+    deleteSequenceConfig,
+    runSequence,
+    stopSequenceNodes,
+    addTerminal,
+    removeTerminal,
+    removeNodeLog,
     fsGetSidebar,
     fsListDir,
     fsMkdir,

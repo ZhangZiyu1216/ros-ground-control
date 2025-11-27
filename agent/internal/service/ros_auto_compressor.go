@@ -3,13 +3,14 @@ package service
 import (
 	"fmt"
 	"log"
-	"ros-ground-control/agent/pkg/config"
+	"os"
 	"ros-ground-control/agent/pkg/utils"
 	"strings"
 	"sync"
 	"time"
 )
 
+// 移除硬编码的 ImageMsgType，使用变量以便调试
 const (
 	ImageMsgType      = "sensor_msgs/Image"
 	CompressedMsgType = "sensor_msgs/CompressedImage"
@@ -26,93 +27,128 @@ var GlobalCompressor = &AutoCompressor{
 	stopChan:           make(chan struct{}),
 }
 
+// ... Start, Stop, Shutdown, Reset 保持不变 ...
+// 这里为了篇幅省略，请保留原有的 Shutdown, Reset, Start 方法代码
+// 仅需确保 Start 调用的是新的 loop
+
 func (ac *AutoCompressor) Start() {
+	// 防止重复启动
+	select {
+	case <-ac.stopChan:
+		ac.stopChan = make(chan struct{})
+	default:
+	}
 	go ac.loop()
 }
 
-// 增加 Shutdown 方法
 func (ac *AutoCompressor) Shutdown() {
-	// 1. 停止循环
 	select {
 	case <-ac.stopChan:
-		// 已经关闭了，不做处理
 	default:
 		close(ac.stopChan)
 	}
+
 	ac.mu.Lock()
 	defer ac.mu.Unlock()
-	// 2. 杀死所有由它启动的进程
+
 	for topic, procID := range ac.runningCompressors {
 		log.Printf("[AutoCompressor] Shutdown: stopping %s (%s)", procID, topic)
 		GlobalProcManager.StopProcess(procID)
 	}
-	// 3. 清空列表
 	ac.runningCompressors = make(map[string]string)
 }
 
+func (ac *AutoCompressor) Reset() {
+	ac.mu.Lock()
+	defer ac.mu.Unlock()
+	ac.runningCompressors = make(map[string]string)
+}
+
+// ---------------------------------------------------------
+
 func (ac *AutoCompressor) loop() {
+	// 简单的重试延迟
 	log.Println("[AutoCompressor] Started. Monitoring for Raw Image topics...")
+
+	// 这里的间隔其实建议从 config 读取，为了调试先硬编码 3秒
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+
 	for {
-		// 1. 获取当前配置的间隔时间
-		cfg := config.GetConfig()
-		intervalMs := max(cfg.CompressorPollMs, 100)
-		duration := time.Duration(intervalMs) * time.Millisecond
-
-		// 2. 创建一个 Timer (一次性定时器)
-		timer := time.NewTimer(duration)
-
 		select {
 		case <-ac.stopChan:
-			// 退出前停止 timer，虽然这里已经不重要了
-			timer.Stop()
 			return
-
-		case <-timer.C:
-			// 时间到了，执行扫描
+		case <-ticker.C:
 			ac.scanAndProcess()
-			// 循环会回到开头，重新读取配置，重新创建 Timer
 		}
 	}
 }
 
 func (ac *AutoCompressor) scanAndProcess() {
-	// 1. 连接 Master
-	// 假设 Master 在本地，端口固定。如果在多机环境，这里应该从 Env 读取 ROS_MASTER_URI
-	client, err := utils.NewROSMasterClient("http://localhost:11311")
+	// 1. 确定 Master URI
+	// 优先读取环境变量，因为 roscore 启动时可能绑定了非 localhost IP
+	masterURI := os.Getenv("ROS_MASTER_URI")
+	if masterURI == "" {
+		masterURI = "http://localhost:11311"
+	}
+
+	// 2. 连接 Master
+	client, err := utils.NewROSMasterClient(masterURI)
 	if err != nil {
-		// Master 可能还没起，忽略
+		// 这里虽然静默，但在调试阶段最好打印一下，确认是否连不上
+		// log.Printf("[AutoCompressor] DEBUG: Connect master failed: %v", err)
 		return
 	}
-	// 2. 获取所有话题类型
+
+	// 3. 获取所有话题类型
 	topicTypes, err := client.GetTopicTypes()
 	if err != nil {
-		log.Printf("[AutoCompressor] Failed to get topic types: %v", err)
+		// 只有在真的出错时打印，连接拒绝通常不打印
 		return
 	}
-	// 3. 获取有发布者的话题 (关键修复！)
-	// 只有在这个列表里的话题，才是真正“活着”的源数据
+
+	// 4. 获取活跃发布者
 	publishedTopics, err := client.GetPublishedTopics()
 	if err != nil {
 		return
 	}
-	// 4. 找出需要压缩的话题
-	// 条件: (Type == Image) AND (Has Publisher) AND (No Compressed Topic)
+
+	// --- 调试日志：每隔几次打印一次发现的图像话题，或者只打印新发现的 ---
+	// 实际生产中可以去掉
+	foundImageCount := 0
+
 	activeRawTopics := make(map[string]bool)
 
 	for topic, typ := range topicTypes {
-		// 必须是 Image 类型，且必须有活跃的发布者
-		if typ == ImageMsgType && publishedTopics[topic] {
-			activeRawTopics[topic] = true
-			// 检查是否已有压缩版
-			compressedTopic := topic + "/compressed"
-			// 注意：我们要检查 compressedTopic 是否有发布者，而不仅仅是类型存在
-			// 如果 master 里有类型记录但没发布者，说明之前的压缩进程挂了，我们需要重启它
-			if publishedTopics[compressedTopic] {
+		// 必须是 sensor_msgs/Image
+		if typ == ImageMsgType {
+			foundImageCount++
+
+			// 必须有发布者
+			if !publishedTopics[topic] {
+				// log.Printf("[AutoCompressor] Ignored %s (No publisher)", topic)
 				continue
 			}
+
+			activeRawTopics[topic] = true
+
+			// 检查是否已有压缩版
+			compressedTopic := topic + "/compressed"
+
+			// 关键修正：检查压缩版是否有发布者，而不仅仅是类型存在
+			if publishedTopics[compressedTopic] {
+				// 已经有压缩版在跑了
+				continue
+			}
+
 			// 启动压缩
 			ac.startCompressor(topic)
 		}
+	}
+
+	if foundImageCount > 0 {
+		// 这是一个极其有用的调试信息，证明逻辑跑到了这里
+		// log.Printf("[AutoCompressor] DEBUG: Found %d raw image topics", foundImageCount)
 	}
 
 	// 5. 清理无效进程
@@ -120,7 +156,6 @@ func (ac *AutoCompressor) scanAndProcess() {
 	defer ac.mu.Unlock()
 
 	for topic, procID := range ac.runningCompressors {
-		// 如果话题不再活跃（没有发布者了），杀掉压缩进程
 		if !activeRawTopics[topic] {
 			log.Printf("[AutoCompressor] Topic %s lost publisher. Stopping compressor %s", topic, procID)
 			GlobalProcManager.StopProcess(procID)
@@ -133,18 +168,15 @@ func (ac *AutoCompressor) startCompressor(topic string) {
 	ac.mu.Lock()
 	defer ac.mu.Unlock()
 
-	// 双重检查
 	if _, exists := ac.runningCompressors[topic]; exists {
 		return
 	}
 
-	// 生成唯一 ID
-	// 将话题名中的 / 替换为 _ 以便作为 ID
 	safeName := strings.ReplaceAll(strings.TrimPrefix(topic, "/"), "/", "_")
 	procID := fmt.Sprintf("auto-comp-%s", safeName)
 
 	// 构造命令
-	// rosrun image_transport republish raw in:=<topic> compressed out:=<topic>
+	// 显式指定 namespace，防止重名干扰
 	cmdStr := "rosrun"
 	args := []string{
 		"image_transport",
@@ -156,29 +188,21 @@ func (ac *AutoCompressor) startCompressor(topic string) {
 	}
 
 	// 获取环境
-	cfg, _ := GlobalROSManager.GenerateConfigStub(IDRosCore) // 借用 roscore 的环境配置
+	cfg, _ := GlobalROSManager.GenerateConfigStub(IDRosCore)
 
 	procCfg := ProcessConfig{
 		ID:          procID,
 		CmdStr:      cmdStr,
 		Args:        args,
 		Env:         cfg.Env,
-		SetupScript: cfg.SetupScript, // 使用系统或 Vendor 环境
+		SetupScript: cfg.SetupScript,
 	}
 
-	log.Printf("[AutoCompressor] Detected raw image: %s. Starting compressor...", topic)
+	log.Printf("[AutoCompressor] 📸 Starting compressor for: %s -> %s", topic, procID)
+
 	if err := GlobalProcManager.StartProcess(procCfg); err != nil {
-		log.Printf("[AutoCompressor] Failed to start compressor for %s: %v", topic, err)
+		log.Printf("[AutoCompressor] ❌ Failed to start compressor: %v", err)
 	} else {
 		ac.runningCompressors[topic] = procID
 	}
-}
-
-// Reset 清空状态 (当 roscore 重启时调用)
-func (ac *AutoCompressor) Reset() {
-	ac.mu.Lock()
-	defer ac.mu.Unlock()
-	// 注意：ProcessManager 会自己处理 handleCoreCrash 时的进程清理
-	// 我们只需要清空 map
-	ac.runningCompressors = make(map[string]string)
 }

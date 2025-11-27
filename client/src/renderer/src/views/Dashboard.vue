@@ -152,7 +152,7 @@
           </div>
         </template>
         <div class="card-body-content">
-          <el-button class="launch-path-button" @click="openFileBrowser">
+          <el-button class="launch-path-button" @click="openFileBrowser('launch')">
             {{ getDisplayPath(form.args) || '选择launch文件' }}
           </el-button>
         </div>
@@ -185,10 +185,51 @@
     <!-- 右侧：功能区 -->
     <el-main class="function-panel">
       <div class="auto-start-panel">
-        <h2>一键启动序列</h2>
-        <!-- 占位符，未来放置序列控制 -->
-        <p>此处将放置一键启动序列的控制组件。</p>
+        <div class="panel-header">
+          <h2>一键启动序列</h2>
+          <el-button
+            type="primary"
+            link
+            :icon="CirclePlus"
+            :disabled="!isCurrentBackendReady"
+            @click="openSeqDialog(null)"
+          >
+            新建序列
+          </el-button>
+        </div>
+
+        <el-scrollbar height="calc(100% - 40px)">
+          <div v-if="sequences.length === 0" class="empty-hint">暂无序列</div>
+
+          <div v-for="seq in sequences" :key="seq.id" class="seq-item">
+            <div class="seq-info">
+              <div class="seq-name">{{ seq.name }}</div>
+              <div class="seq-desc">{{ seq.steps.length }} 个步骤</div>
+            </div>
+            <div class="seq-actions">
+              <el-button
+                circle
+                size="small"
+                :type="seq._status === 'running' ? 'danger' : 'success'"
+                :icon="seq._status === 'running' ? VideoPause : VideoPlay"
+                :loading="seq._status === 'running'"
+                :disabled="!isCurrentBackendReady"
+                @click="toggleSequence(seq)"
+              />
+              <el-button circle size="small" :icon="Edit" @click="openSeqDialog(seq)" />
+              <el-button
+                circle
+                size="small"
+                :icon="Delete"
+                type="danger"
+                plain
+                @click="deleteSequence(seq)"
+              />
+            </div>
+          </div>
+        </el-scrollbar>
       </div>
+
       <div class="rosbag-panel">
         <h2>ROSbag 录制/播放</h2>
         <!-- 占位符，未来放置录制/播放控制 -->
@@ -217,6 +258,76 @@
       />
     </div>
   </el-dialog>
+  <el-dialog
+    v-model="isSeqDialogVisible"
+    title="编辑启动序列"
+    width="500px"
+    :close-on-click-modal="false"
+    append-to-body
+  >
+    <el-form label-position="top">
+      <el-form-item label="序列名称">
+        <el-input v-model="seqForm.name" placeholder="例如: 全系统启动" />
+      </el-form-item>
+
+      <el-form-item label="执行流程">
+        <div class="timeline-editor">
+          <el-timeline>
+            <el-timeline-item
+              v-for="(step, index) in seqForm.steps"
+              :key="index"
+              :type="step.type === 'node' ? 'primary' : 'warning'"
+              :icon="step.type === 'delay' ? Timer : undefined"
+              hide-timestamp
+            >
+              <div class="step-content">
+                <!-- 节点选择 -->
+                <el-select
+                  v-if="step.type === 'node'"
+                  v-model="step.content"
+                  placeholder="选择节点"
+                  size="small"
+                  style="width: 200px"
+                >
+                  <el-option v-for="n in nodes" :key="n.id" :label="n.name" :value="n.id" />
+                </el-select>
+
+                <!-- 延时输入 -->
+                <div v-else class="delay-input">
+                  <span>等待</span>
+                  <el-input-number
+                    v-model="step.content"
+                    size="small"
+                    :min="100"
+                    :step="500"
+                    controls-position="right"
+                    style="width: 100px"
+                  />
+                  <span>ms</span>
+                </div>
+
+                <!-- 删除步骤 -->
+                <el-button link type="danger" :icon="Remove" @click="removeSeqStep(index)" />
+              </div>
+            </el-timeline-item>
+
+            <!-- 底部添加按钮 -->
+            <el-timeline-item class="add-step-item">
+              <el-button-group size="small">
+                <el-button :icon="Plus" @click="addSeqStep('node')">节点</el-button>
+                <el-button :icon="Timer" @click="addSeqStep('delay')">延时</el-button>
+              </el-button-group>
+            </el-timeline-item>
+          </el-timeline>
+        </div>
+      </el-form-item>
+    </el-form>
+
+    <template #footer>
+      <el-button @click="isSeqDialogVisible = false">取消</el-button>
+      <el-button type="primary" @click="saveSequence">保存</el-button>
+    </template>
+  </el-dialog>
 </template>
 
 <script setup>
@@ -226,7 +337,17 @@ import NodeParamsList from '../components/NodeParamsList.vue' // [新增] 引入
 import { ref, reactive, computed, watch, onMounted } from 'vue'
 import { useRobotStore } from '../store/robot'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Edit, Delete, EditPen } from '@element-plus/icons-vue'
+import {
+  Edit,
+  Delete,
+  EditPen,
+  VideoPlay,
+  VideoPause,
+  Timer,
+  CirclePlus,
+  Remove,
+  Plus
+} from '@element-plus/icons-vue'
 // #endregion
 
 // #region 2. State & Store Connection
@@ -251,6 +372,19 @@ const fileBrowserContext = reactive({
   targetData: null // 存储临时的引用对象，例如 param 对象
 })
 const editingNodeId = ref(null) // 使用 ID 判断编辑状态，新增用 '__new__'
+
+// --- 序列管理状态 ---
+const sequences = computed(() => {
+  const client = robotStore.clients[props.currentBackendId]
+  return client ? client.sequences || [] : []
+})
+
+const isSeqDialogVisible = ref(false)
+const seqForm = reactive({
+  id: '',
+  name: '',
+  steps: [] // { type: 'node'|'delay', content: 'node-id'|'1000' }
+})
 
 // 表单数据
 const form = reactive({
@@ -365,6 +499,80 @@ async function deleteNode(node) {
     ElMessage.success('节点已删除')
   } catch (e) {
     if (e !== 'cancel') ElMessage.error('删除失败')
+  }
+}
+
+// --- [新增] 序列操作 ---
+function openSeqDialog(seq = null) {
+  if (seq) {
+    // 编辑模式
+    seqForm.id = seq.id
+    seqForm.name = seq.name
+    // 深拷贝步骤，防止修改时直接影响 UI
+    seqForm.steps = JSON.parse(JSON.stringify(seq.steps))
+  } else {
+    // 新增模式
+    seqForm.id = ''
+    seqForm.name = ''
+    seqForm.steps = []
+  }
+  isSeqDialogVisible.value = true
+}
+
+function addSeqStep(type) {
+  if (type === 'node') {
+    // 默认选中第一个节点(如果有)
+    const firstNodeId = nodes.value.length > 0 ? nodes.value[0].id : ''
+    seqForm.steps.push({ type: 'node', content: firstNodeId })
+  } else {
+    seqForm.steps.push({ type: 'delay', content: '1000' })
+  }
+}
+
+function removeSeqStep(index) {
+  seqForm.steps.splice(index, 1)
+}
+
+async function saveSequence() {
+  if (!seqForm.name) {
+    ElMessage.warning('请输入序列名称')
+    return
+  }
+  // 校验步骤完整性
+  for (const step of seqForm.steps) {
+    if (step.type === 'node' && !step.content) {
+      ElMessage.warning('请为所有节点步骤选择具体的节点')
+      return
+    }
+  }
+
+  const data = {
+    id: seqForm.id || `seq-${Date.now()}`,
+    name: seqForm.name,
+    steps: seqForm.steps,
+    _status: 'stopped' // 运行时状态，不持久化也没关系，但在 Store 里初始化一下
+  }
+
+  await robotStore.saveSequenceConfig(props.currentBackendId, data)
+  isSeqDialogVisible.value = false
+}
+
+async function deleteSequence(seq) {
+  try {
+    await ElMessageBox.confirm(`确定删除序列 "${seq.name}" 吗？`, '提示', { type: 'warning' })
+    await robotStore.deleteSequenceConfig(props.currentBackendId, seq.id)
+  } catch {
+    /* */
+  }
+}
+
+async function toggleSequence(seq) {
+  if (seq._status === 'running') {
+    // 停止序列中的所有节点
+    await robotStore.stopSequenceNodes(props.currentBackendId, seq)
+  } else {
+    // 开始执行
+    await robotStore.runSequence(props.currentBackendId, seq)
   }
 }
 // #endregion
@@ -795,5 +1003,85 @@ watch(
   padding: 0 !important; /* 移除内边距，由内部组件控制 */
   border: 1px solid var(--el-border-color-light) !important;
   height: 100%;
+}
+
+/* 自动启动面板布局 */
+.auto-start-panel {
+  flex: 1; /* 占据一半高度 (如果有两个panel的话) */
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border-radius: 8px;
+  padding: 15px;
+  margin-bottom: 20px;
+  box-shadow: 0 2px 12px 0 rgba(0, 0, 0, 0.05);
+}
+
+.panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.panel-header h2 {
+  margin: 0;
+  font-size: 16px;
+  color: #303133;
+}
+
+/* 序列列表项 */
+.seq-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px;
+  border-bottom: 1px solid #f0f2f5;
+  transition: background 0.2s;
+}
+.seq-item:last-child {
+  border-bottom: none;
+}
+.seq-item:hover {
+  background-color: #fafafa;
+}
+
+.seq-name {
+  font-size: 14px;
+  font-weight: 500;
+  color: #606266;
+}
+.seq-desc {
+  font-size: 12px;
+  color: #909399;
+}
+
+.empty-hint {
+  text-align: center;
+  color: #909399;
+  padding: 20px;
+  font-size: 13px;
+}
+
+/* 弹窗内的 Timeline 样式 */
+.timeline-editor {
+  max-height: 300px;
+  overflow-y: auto;
+  padding-top: 10px;
+}
+.step-content {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.delay-input {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 13px;
+  color: #606266;
+}
+/* 去掉 timeline 最后一个节点的 tail */
+:deep(.el-timeline-item:last-child .el-timeline-item__tail) {
+  display: none;
 }
 </style>

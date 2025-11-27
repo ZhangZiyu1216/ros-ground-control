@@ -33,6 +33,10 @@ function createWindow() {
       height: 50
     }
   })
+  // 强制禁用代理，解决局域网 WebSocket 连不上被误走代理的问题
+  win.webContents.session.setProxy({ mode: 'direct' }).then(() => {
+    console.log('[Main] System proxy bypassed (Direct Mode)')
+  })
 
   win.on('ready-to-show', () => win.show())
 

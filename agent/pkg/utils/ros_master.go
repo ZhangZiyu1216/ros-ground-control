@@ -19,39 +19,41 @@ func (c *ROSMasterClient) GetPublishedTopics() (map[string]bool, error) {
 	// Return: [code, status, [publishers, subscribers, services]]
 	// publishers: [ [topic, [node1, node2...]], ... ]
 
-	var result []interface{}
+	var result []any
 	err := c.client.Call("getSystemState", c.ID, &result)
 	if err != nil {
 		return nil, err
 	}
 
+	// 解析返回值
+	// [code, statusMessage, [publishers, subscribers, services]]
 	if len(result) < 3 {
-		return nil, fmt.Errorf("invalid response format")
+		return nil, fmt.Errorf("invalid response length")
 	}
 
 	stateList, ok := result[2].([]interface{})
 	if !ok || len(stateList) < 1 {
-		return nil, fmt.Errorf("system state format error")
+		return nil, fmt.Errorf("system state body error")
 	}
 
 	// stateList[0] 是 publishers
 	pubs, ok := stateList[0].([]interface{})
 	if !ok {
-		return nil, fmt.Errorf("publishers list format error")
+		return nil, fmt.Errorf("publishers list error")
 	}
 
 	activeTopics := make(map[string]bool)
 	for _, item := range pubs {
-		// item: [topic, [nodes...]]
+		// item 应该是 [topicName, [node1, node2...]]
 		pair, ok := item.([]interface{})
 		if !ok || len(pair) < 2 {
 			continue
 		}
-		topic := pair[0].(string)
-		nodes, _ := pair[1].([]interface{})
 
-		// 只有当节点列表不为空时，才算活跃
-		if len(nodes) > 0 {
+		topic, ok1 := pair[0].(string)
+		nodes, ok2 := pair[1].([]interface{})
+
+		if ok1 && ok2 && len(nodes) > 0 {
 			activeTopics[topic] = true
 		}
 	}

@@ -52,6 +52,10 @@ func NewRouter() *gin.Engine {
 		nodeGroup := apiGroup.Group("/nodes")
 		RegisterNodeListRoutes(nodeGroup)
 
+		// 启动序列接口
+		seqGroup := apiGroup.Group("/sequences")
+		RegisterSequenceRoutes(seqGroup)
+
 		// ros 包录制接口
 		bagGroup := apiGroup.Group("/bag")
 		RegisterBagRoutes(bagGroup)
