@@ -1,49 +1,63 @@
-import { reactive } from 'vue'
+import { reactive, ref } from 'vue'
 import { FoxgloveClient } from '@foxglove/ws-protocol'
 import { useRobotStore } from '../store/robot'
 import { parse as parseRosMsg } from '@foxglove/rosmsg'
 import { MessageReader } from '@foxglove/rosmsg-serialization'
 
-// --- 全局状态池 ---
-const connections = new Map() // backendId -> ConnectionState
-const reconnectTimers = new Map() // backendId -> TimerID
+// --- 1. 数据仓库 (Data Stores) ---
+// Key: backendId (UUID)
+const dataStores = new Map()
 
-class ConnectionState {
-  constructor() {
-    this.client = null
-    this.channels = reactive(new Map())
-    this.messages = reactive(new Map())
-    this.readers = new Map()
-    this.subscriptions = new Map()
-    this.subIdToChannelId = new Map()
+const getDataStore = (backendId) => {
+  if (!dataStores.has(backendId)) {
+    dataStores.set(backendId, {
+      // --- 外部响应式数据 (UI 绑定) ---
+      topics: ref([]), // 供下拉列表使用
+      messages: reactive(new Map()), // TopicName -> Decoded Message
+
+      // --- 内部状态 ---
+      nameToChannel: new Map(), // TopicName -> ChannelInfo (ID, Schema)
+      readers: new Map(), // TopicName -> MessageReader Function
+
+      // 活跃状态管理
+      // TopicName -> { pubCount: Number, subCount: Number }
+      topicGraphState: new Map(),
+      activeTopicNames: new Set(), // 缓存计算结果
+      hasReceivedGraph: false, // 是否收到过图更新
+
+      // 订阅意图管理
+      // TopicName -> { count: Number, subId: Number|null, expectedType: String }
+      subscriptions: new Map(),
+
+      // 反查映射 (subId -> TopicName)
+      subIdToTopicName: new Map()
+    })
   }
+  return dataStores.get(backendId)
 }
+
+// --- 2. 连接池 ---
+const activeConnections = new Map()
 
 export function useFoxglove() {
   const robotStore = useRobotStore()
 
+  // --- 内部：创建消息读取器 ---
   const createMessageReader = (channel) => {
     try {
       if (channel.encoding === 'json') {
-        return (data) => {
-          const text = new TextDecoder().decode(data)
-          return JSON.parse(text)
-        }
+        return (data) => JSON.parse(new TextDecoder().decode(data))
       }
-
       if (channel.encoding === 'ros1' || channel.schemaName === 'ros1') {
         const definitions = parseRosMsg(channel.schema)
         const reader = new MessageReader(definitions)
         return (data) => reader.readMessage(data)
       }
-
+      // 二进制回退 (如 CompressedImage)
       return (data) => {
         if (channel.schemaName.includes('Image')) {
           const binary = new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
-          let binaryStr = ''
-          // 性能优化提示：对于高频大图，建议寻找更高效的转换方式
-          for (let i = 0; i < binary.length; i++) binaryStr += String.fromCharCode(binary[i])
-          return { data: window.btoa(binaryStr), format: 'raw', _isBinary: true }
+          return { data: binary, format: 'raw', _isBinary: true }
         }
         return { error: `Unsupported encoding: ${channel.encoding}` }
       }
@@ -53,171 +67,277 @@ export function useFoxglove() {
     }
   }
 
-  // --- 连接核心 ---
-  const ensureConnection = (backendId) => {
-    // 1. 基础检查
-    const robot = robotStore.clients[backendId]
-    if (!robot || robot.status !== 'ready') return
+  // --- 内部：计算并更新活跃话题列表 ---
+  const recalculateActiveTopics = (store) => {
+    const newActiveSet = new Set()
 
-    // 2. 如果已存在连接，跳过
-    if (connections.has(backendId)) return
-
-    // 3. 如果正在等待重连，也跳过（防止频繁创建）
-    if (reconnectTimers.has(backendId)) return
-
-    const state = new ConnectionState()
-    connections.set(backendId, state)
-
-    const ip = robot.ip
-    const url = `ws://${ip}:8765`
-    console.log(`[Foxglove] Connecting to ${backendId} (${url})...`)
-
-    // 4. 创建客户端
-    const client = new FoxgloveClient({
-      ws: new WebSocket(url, [FoxgloveClient.SUPPORTED_SUBPROTOCOL])
-    })
-    state.client = client
-
-    // --- 事件处理 ---
-
-    client.on('open', () => {
-      console.log(`[Foxglove] Connected to ${backendId}`)
-      // 连接成功，清除重连定时器标记（如果有）
-      if (reconnectTimers.has(backendId)) {
-        clearTimeout(reconnectTimers.get(backendId))
-        reconnectTimers.delete(backendId)
+    // 遍历图状态
+    for (const [name, stats] of store.topicGraphState.entries()) {
+      // 1. 发布者存在 -> 活跃
+      if (stats.pubCount > 0) {
+        newActiveSet.add(name)
+        continue
       }
-    })
 
-    // 统一的清理/重连逻辑
-    const handleDisconnect = () => {
-      // 避免重复处理
-      if (!connections.has(backendId)) return
+      // 2. 只有订阅者的情况：排除 Foxglove 自身的订阅
+      // 检查我们自己是否订阅了这个话题
+      const mySubInfo = store.subscriptions.get(name)
+      const amISubscribing = mySubInfo && mySubInfo.count > 0
 
-      console.log(`[Foxglove] Disconnected/Error on ${backendId}. Cleaning up...`)
+      // 估算“其他订阅者”数量
+      // 注意：这里假设 Foxglove Bridge 将每个 WebSocket Client 算作 1 个 Subscriber
+      const otherSubCount = stats.subCount - (amISubscribing ? 1 : 0)
 
-      // 1. 清理当前状态
-      connections.delete(backendId)
-
-      // 2. 触发重连机制
-      // 检查 Store 中该机器人是否还处于“连接”状态。如果是，说明是意外断开，需要重连。
-      const currentRobot = robotStore.clients[backendId]
-      if (currentRobot && currentRobot.status === 'ready') {
-        console.log(`[Foxglove] Robot is still ready. Scheduling reconnect in 3s...`)
-
-        if (reconnectTimers.has(backendId)) clearTimeout(reconnectTimers.get(backendId))
-
-        const timer = setTimeout(() => {
-          reconnectTimers.delete(backendId)
-          ensureConnection(backendId)
-        }, 3000)
-
-        reconnectTimers.set(backendId, timer)
+      // 如果还有其他订阅者 -> 活跃
+      if (otherSubCount > 0) {
+        newActiveSet.add(name)
       }
     }
 
-    client.on('error', (e) => {
-      console.warn(`[Foxglove] Error on ${backendId}:`, e)
-      handleDisconnect()
+    store.activeTopicNames = newActiveSet
+    updateTopicList(store)
+  }
+
+  // --- 内部：更新 UI 列表 (合并元数据与活跃状态) ---
+  const updateTopicList = (store) => {
+    const list = Array.from(store.nameToChannel.values()).map((ch) => {
+      const name = ch.topic
+      // 如果还没收到图更新，默认全显示(乐观模式)；否则查 Set
+      const isActive = !store.hasReceivedGraph ? true : store.activeTopicNames.has(name)
+
+      return {
+        ...ch,
+        isAlive: isActive
+      }
+    })
+    store.topics.value = list
+  }
+
+  // --- 内部：重置连接状态 ---
+  const resetConnectionState = (backendId) => {
+    const store = getDataStore(backendId)
+
+    store.topics.value = []
+    store.messages.clear()
+    store.nameToChannel.clear()
+    store.readers.clear()
+    store.subIdToTopicName.clear()
+
+    // 重置图状态
+    store.topicGraphState.clear()
+    store.activeTopicNames.clear()
+    store.hasReceivedGraph = false
+
+    // 重置订阅 ID (保留意图)
+    for (const sub of store.subscriptions.values()) {
+      sub.subId = null
+    }
+  }
+
+  // --- 核心：连接逻辑 ---
+  const ensureConnection = (backendId) => {
+    const robot = robotStore.clients[backendId]
+    if (!robot || !robot.ip) return
+    if (activeConnections.has(backendId)) return
+
+    const store = getDataStore(backendId)
+    const url = `ws://${robot.ip}:8765`
+    console.log(`[Foxglove] Connecting to ${url}`)
+
+    const client = new FoxgloveClient({
+      ws: new WebSocket(url, [FoxgloveClient.SUPPORTED_SUBPROTOCOL])
+    })
+    activeConnections.set(backendId, client)
+
+    // 1. Open
+    client.on('open', () => {
+      console.log(`[Foxglove] Connected to ${backendId}`)
+      resetConnectionState(backendId)
     })
 
-    client.on('close', handleDisconnect)
+    // 2. ServerInfo (订阅图更新)
+    client.on('serverInfo', (info) => {
+      if (info.capabilities && info.capabilities.includes('connectionGraph')) {
+        client.subscribeConnectionGraph()
+      }
+    })
 
+    // 3. Cleanup
+    const cleanup = () => {
+      console.log(`[Foxglove] Socket closed ${backendId}`)
+      activeConnections.delete(backendId)
+      resetConnectionState(backendId)
+    }
+    client.on('error', (e) => console.warn(`[Foxglove] Error:`, e))
+    client.on('close', cleanup)
+
+    // 4. Advertise (收到元数据)
     client.on('advertise', (newChannels) => {
+      let listChanged = false
       newChannels.forEach((ch) => {
-        const reader = createMessageReader(ch)
-        state.readers.set(ch.id, reader)
-        state.channels.set(ch.id, ch)
+        const topicName = ch.topic
+        store.nameToChannel.set(topicName, ch)
+
+        // 创建 Reader
+        store.readers.set(topicName, createMessageReader(ch))
+
+        // 自动恢复订阅 (Auto-Resubscribe)
+        const pendingSub = store.subscriptions.get(topicName)
+        if (pendingSub && pendingSub.count > 0 && pendingSub.subId === null) {
+          // 简单类型校验
+          if (!pendingSub.expectedType || pendingSub.expectedType === ch.schemaName) {
+            try {
+              const newSubId = client.subscribe(ch.id)
+              pendingSub.subId = newSubId
+              store.subIdToTopicName.set(newSubId, topicName)
+            } catch (e) {
+              console.warn('Resubscribe error', e)
+            }
+          }
+        }
+        listChanged = true
       })
+
+      if (listChanged) {
+        // 如果有新话题，重新计算活跃状态（因为可能有新话题已经在 graphState 里了）
+        recalculateActiveTopics(store)
+      }
     })
 
+    // 5. Unadvertise
     client.on('unadvertise', (channelIds) => {
-      channelIds.forEach((id) => {
-        state.channels.delete(id)
-        state.readers.delete(id)
-        state.messages.delete(id)
-      })
+      const idsToRemove = new Set(channelIds)
+      let listChanged = false
+      for (const [name, ch] of store.nameToChannel.entries()) {
+        if (idsToRemove.has(ch.id)) {
+          store.nameToChannel.delete(name)
+          store.readers.delete(name)
+          store.messages.delete(name)
+          // 订阅 ID 清理
+          const sub = store.subscriptions.get(name)
+          if (sub) {
+            store.subIdToTopicName.delete(sub.subId)
+            sub.subId = null
+          }
+          listChanged = true
+        }
+      }
+      if (listChanged) recalculateActiveTopics(store)
     })
 
-    client.on('message', ({ subscriptionId, data }) => {
-      const channelId = state.subIdToChannelId.get(subscriptionId)
-      if (channelId === undefined) return
+    // 6. Graph Update (核心活跃检测)
+    client.on('connectionGraphUpdate', (graph) => {
+      const graphState = store.topicGraphState
+      let graphChanged = false
 
-      const reader = state.readers.get(channelId)
+      // 移除
+      if (graph.removedTopics) {
+        graph.removedTopics.forEach((name) => {
+          if (graphState.has(name)) {
+            graphState.delete(name)
+            graphChanged = true
+          }
+        })
+      }
+
+      // 发布者更新
+      if (graph.publishedTopics) {
+        graph.publishedTopics.forEach((t) => {
+          if (!graphState.has(t.name)) graphState.set(t.name, { pubCount: 0, subCount: 0 })
+          graphState.get(t.name).pubCount = t.publisherIds.length
+          graphChanged = true
+        })
+      }
+
+      // 订阅者更新
+      if (graph.subscribedTopics) {
+        graph.subscribedTopics.forEach((t) => {
+          if (!graphState.has(t.name)) graphState.set(t.name, { pubCount: 0, subCount: 0 })
+          graphState.get(t.name).subCount = t.subscriberIds.length
+          graphChanged = true
+        })
+      }
+
+      if (graphChanged || !store.hasReceivedGraph) {
+        store.hasReceivedGraph = true
+        recalculateActiveTopics(store)
+      }
+    })
+
+    // 7. Message
+    client.on('message', ({ subscriptionId, data }) => {
+      const topicName = store.subIdToTopicName.get(subscriptionId)
+      if (!topicName) return
+      const reader = store.readers.get(topicName)
       if (reader) {
         try {
-          const decoded = reader(data)
-          state.messages.set(channelId, decoded)
+          store.messages.set(topicName, reader(data))
           // eslint-disable-next-line no-unused-vars
         } catch (e) {
-          // ignore parsing errors
+          // no use
         }
       }
     })
   }
 
-  // --- API ---
+  // --- 导出 API ---
 
-  const getTopics = (backendId) => {
+  const getTopicsRef = (backendId) => {
     ensureConnection(backendId)
-    const state = connections.get(backendId)
-    return state ? Array.from(state.channels.values()) : []
+    return getDataStore(backendId).topics
   }
 
-  const getMessage = (backendId, channelId) => {
-    const state = connections.get(backendId)
-    return state ? state.messages.get(channelId) : null
+  const getMessage = (backendId, topicName) => {
+    if (!topicName) return null
+    return getDataStore(backendId).messages.get(topicName)
   }
 
-  const subscribe = (backendId, channelId) => {
+  const subscribe = (backendId, topicName, expectedType = null) => {
     ensureConnection(backendId)
-    const state = connections.get(backendId)
+    const store = getDataStore(backendId)
+    const client = activeConnections.get(backendId)
 
-    // 如果连接正在重连中 (state 为空)，返回空函数
-    // 等连接成功后，MonitorCard 重新渲染会再次调用 subscribe
-    if (!state || !state.client) return () => {}
-
-    let subInfo = state.subscriptions.get(channelId)
-
+    let subInfo = store.subscriptions.get(topicName)
     if (!subInfo) {
-      try {
-        const subId = state.client.subscribe(channelId)
-        subInfo = { subId, count: 0 }
-        state.subscriptions.set(channelId, subInfo)
-        state.subIdToChannelId.set(subId, channelId)
-        console.log(`[Foxglove] Subscribed ${channelId}`)
-      } catch (e) {
-        console.error('Subscribe failed:', e)
-        return () => {}
-      }
+      subInfo = { count: 0, subId: null, expectedType }
+      store.subscriptions.set(topicName, subInfo)
+    } else {
+      if (expectedType) subInfo.expectedType = expectedType
     }
 
     subInfo.count++
 
+    // 立即订阅逻辑
+    if (client && subInfo.subId === null) {
+      const channel = store.nameToChannel.get(topicName)
+      if (channel) {
+        try {
+          const subId = client.subscribe(channel.id)
+          subInfo.subId = subId
+          store.subIdToTopicName.set(subId, topicName)
+          // 订阅发生变化，重新计算活跃状态 (因为我们的订阅会影响 subCount)
+          // 注意：Bridge 之后会发 Graph Update，但我们也可以预判
+          setTimeout(() => recalculateActiveTopics(store), 100)
+        } catch (e) {
+          console.warn('Sub failed', e)
+        }
+      }
+    }
+
+    // Unsubscribe Cleanup
     return () => {
-      // 检查 state 是否还存在 (可能因为断线重连被新建了)
-      const currentState = connections.get(backendId)
-      if (!currentState || !currentState.client) return
-
-      // 检查 subInfo 是否还通过引用存在于 map 中
-      // (断线重连会清空 subscriptions Map，所以旧的 subInfo 会失效)
-      if (!currentState.subscriptions.has(channelId)) return
-
       subInfo.count--
       if (subInfo.count <= 0) {
-        console.log(`[Foxglove] Unsubscribing ${channelId}`)
-        try {
-          currentState.client.unsubscribe(subInfo.subId)
-          // eslint-disable-next-line no-unused-vars
-        } catch (e) {
-          /* ignore */
+        if (client && subInfo.subId !== null) {
+          client.unsubscribe(subInfo.subId)
+          store.subIdToTopicName.delete(subInfo.subId)
         }
-
-        currentState.subscriptions.delete(channelId)
-        currentState.subIdToChannelId.delete(subInfo.subId)
+        store.subscriptions.delete(topicName)
+        // 退订后，该话题可能变成“死”话题，重新计算
+        setTimeout(() => recalculateActiveTopics(store), 100)
       }
     }
   }
 
-  return { getTopics, getMessage, subscribe }
+  return { getTopicsRef, getMessage, subscribe }
 }

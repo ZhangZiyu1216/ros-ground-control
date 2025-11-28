@@ -147,6 +147,18 @@ onMounted(() => {
   } else {
     setupTerminalMode()
   }
+  // Vue 的渲染和 xterm 的 canvas 计算有时间差
+  // 立即调用一次，并在稍后再次调用以适应 Flex 布局完成后的最终尺寸
+  if (fitAddon) {
+    fitAddon.fit()
+    setTimeout(() => {
+      fitAddon.fit()
+      // 如果是终端模式，可能还需要发一次 resize 给后端
+      if (props.mode === 'terminal' && terminal) {
+        sendResize(terminal.cols, terminal.rows)
+      }
+    }, 200) // 200ms 足够让父容器完成动画或布局
+  }
 })
 
 onUnmounted(() => {
@@ -165,8 +177,8 @@ defineExpose({
 .terminal-container {
   width: 100%;
   height: 100%;
-  background-color: #1e1e1e; /* 避免闪烁白屏 */
-  padding: 5px;
+  background-color: #1e1e1e;
   box-sizing: border-box;
+  overflow: hidden; /* 自身不滚动，让 xterm 内部滚动 */
 }
 </style>

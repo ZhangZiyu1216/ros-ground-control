@@ -2,7 +2,7 @@
   <div class="data-visualizer">
     <div v-if="data === undefined || data === null" class="no-data">暂无数据</div>
     <div v-else class="json-container">
-      <!-- 如果 data 本身不是对象（比如解析失败返回了字符串） -->
+      <!-- 简单值 -->
       <div v-if="!isComplex(data)">
         <span class="value">{{ data }}</span>
       </div>
@@ -10,24 +10,35 @@
       <div v-for="(val, key) in data" v-else :key="key" class="data-row">
         <span class="key">{{ key }}:</span>
 
-        <!-- 1. 时间戳特殊处理 -->
+        <!-- 1. 时间戳 -->
         <template v-if="isTimestamp(val)">
           <span class="value number">{{ formatTime(val) }}</span>
         </template>
 
-        <!-- 2. Uint8Array (二进制) 特殊处理 -->
-        <template v-else-if="isBinary(val)">
-          <span class="value array">[Binary Data: {{ val.byteLength || val.length }} bytes]</span>
+        <!-- 2. 真正的二进制 (Uint8Array) -->
+        <template v-else-if="isTrueBinary(val)">
+          <span class="value array">[Binary Stream: {{ val.byteLength }} bytes]</span>
         </template>
 
-        <!-- 3. 对象递归 -->
+        <!-- 3. TypedArray (Float64Array 等) -> 转为普通数组显示 -->
+        <template v-else-if="isTypedArray(val)">
+          <!-- 如果数据太长 (比如点云)，只显示前几个 -->
+          <span v-if="val.length > 20" class="value array">
+            [{{ val.constructor.name }}({{ val.length }})] {{ formatLargeArray(val) }}
+          </span>
+          <div v-else class="nested">
+            <span class="value number">{{ Array.from(val).join(', ') }}</span>
+          </div>
+        </template>
+
+        <!-- 4. 普通对象 -->
         <template v-else-if="isPlainObject(val)">
           <div class="nested">
             <DataVisualizer :data="val" />
           </div>
         </template>
 
-        <!-- 4. 数组 -->
+        <!-- 5. 普通数组 -->
         <template v-else-if="Array.isArray(val)">
           <span v-if="val.length > 20" class="value array">[Array({{ val.length }})] ...</span>
           <div v-else class="nested">
@@ -35,7 +46,7 @@
           </div>
         </template>
 
-        <!-- 5. 基础类型 -->
+        <!-- 6. 兜底 -->
         <template v-else>
           <span class="value" :class="typeof val">{{ val }}</span>
         </template>
@@ -47,26 +58,32 @@
 <script setup>
 defineProps({ data: [Object, String, Number, Boolean, Array] })
 
-// --- 安全的类型检查函数 ---
+// --- 类型检查工具 ---
 
-// 检查是否是二进制数据 (Uint8Array 或类似的 TypedArray)
-const isBinary = (val) => {
-  if (!val) return false
-  // 不使用 instanceof，改用构造函数名称或 duck typing
-  return val.constructor?.name === 'Uint8Array' || (val.buffer && val.byteLength !== undefined)
+// 1. 严格的二进制检查：只认 Uint8Array
+const isTrueBinary = (val) => {
+  return val && val.constructor && val.constructor.name === 'Uint8Array'
 }
 
-// 检查是否是纯对象 (排除 Array 和 Binary)
+// 2. 检查其他 TypedArray (Float64Array, Int32Array 等)
+const isTypedArray = (val) => {
+  return val && val.buffer && val.byteLength !== undefined && !isTrueBinary(val)
+}
+
 const isPlainObject = (val) => {
-  return val && typeof val === 'object' && !Array.isArray(val) && !isBinary(val)
+  return (
+    val &&
+    typeof val === 'object' &&
+    !Array.isArray(val) &&
+    !isTypedArray(val) &&
+    !isTrueBinary(val)
+  )
 }
 
-// 检查是否是复杂类型 (对象或数组)
 const isComplex = (val) => {
   return (typeof val === 'object' && val !== null) || Array.isArray(val)
 }
 
-// 检查是否是 ROS Time 对象 { sec: 123, nsec: 456 }
 const isTimestamp = (val) => {
   return val && typeof val === 'object' && 'sec' in val && 'nsec' in val
 }
@@ -74,6 +91,13 @@ const isTimestamp = (val) => {
 const formatTime = (time) => {
   const date = new Date(time.sec * 1000 + time.nsec / 1e6)
   return date.toLocaleTimeString() + `.${Math.floor(time.nsec / 1000)}`
+}
+
+const formatLargeArray = (arr) => {
+  const preview = Array.from(arr.slice(0, 5))
+    .map((n) => (n.toFixed ? n.toFixed(3) : n))
+    .join(', ')
+  return `[${preview}, ...]`
 }
 </script>
 

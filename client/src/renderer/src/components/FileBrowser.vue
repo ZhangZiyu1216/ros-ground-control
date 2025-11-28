@@ -232,8 +232,17 @@
       <!-- 2.3 底部操作栏 -->
       <div v-if="!hideFooter" class="footer-toolbar">
         <div class="selected-info">
-          <span v-if="selectedFile">已选择: {{ selectedFile.name }}</span>
-          <span v-else>未选择文件</span>
+          <!-- [修改] 提示文案 -->
+          <template v-if="targetType === 'path'">
+            <span
+              >已选择:
+              {{ selectedFile && selectedFile.isDir ? selectedFile.name : '当前目录' }}</span
+            >
+          </template>
+          <template v-else>
+            <span v-if="selectedFile">已选择: {{ selectedFile.name }}</span>
+            <span v-else>未选择文件</span>
+          </template>
         </div>
         <div>
           <el-button @click="onCancel">取消</el-button>
@@ -326,7 +335,8 @@ const props = defineProps({
   allowedExtensions: { type: Array, default: () => [] },
   backendId: { type: String, required: true }, // 这里传入的是 UUID
   showClose: { type: Boolean, default: false }, // 控制关闭按钮显示
-  hideFooter: { type: Boolean, default: true }
+  hideFooter: { type: Boolean, default: true },
+  targetType: { type: String, default: 'file' }
 })
 const emit = defineEmits(['file-selected', 'cancel', 'close'])
 
@@ -417,8 +427,19 @@ function formatDate(timestamp) {
 }
 
 function isFileSelectable(file) {
-  if (!file || file.isDir) return false
-  if (props.allowedExtensions.length === 0) return true
+  if (!file) return false
+  // 模式 1: 选择目录 (Path Mode)
+  if (props.targetType === 'path') {
+    // 只允许选中文件夹，文件不可选
+    return file.isDir
+  }
+  // 模式 2: 选择文件 (File Mode)
+  if (file.isDir) {
+    return false // 文件夹不可作为最终选择
+  }
+  if (props.allowedExtensions.length === 0) {
+    return true
+  }
   const fileName = file.name.toLowerCase()
   return props.allowedExtensions.some((ext) => fileName.endsWith(ext.toLowerCase()))
 }
@@ -436,7 +457,12 @@ function onBreadcrumbWheel(e) {
 const isRoot = computed(() => currentPath.value === '/')
 const canGoBack = computed(() => historyIndex.value > 0)
 const canGoForward = computed(() => historyIndex.value < history.value.length - 1)
-const isSelectionConfirmed = computed(() => isFileSelectable(selectedFile.value))
+const isSelectionConfirmed = computed(() => {
+  // 如果是选择路径模式，总是允许确认（因为如果不选子文件夹，就代表选择当前目录）
+  if (props.targetType === 'path') return true
+  // 如果是选择文件模式，必须选中了符合条件的文件
+  return isFileSelectable(selectedFile.value)
+})
 const breadcrumbItems = computed(() => {
   const parts = currentPath.value.split('/').filter(Boolean)
   const items = [{ name: '根目录', path: '/' }]
@@ -566,12 +592,24 @@ function onRowDoubleClick(row) {
   }
 }
 function onConfirm() {
-  if (isSelectionConfirmed.value)
-    emit('file-selected', pathHelper.join(currentPath.value, selectedFile.value.name))
-  else ElMessage.warning('请选择一个符合要求的文件类型。')
-}
-function onCancel() {
-  emit('cancel')
+  // 分支 A: 选择路径模式
+  if (props.targetType === 'path') {
+    let finalPath = currentPath.value
+    // 如果用户高亮选中了一个子文件夹，则返回该子文件夹的路径
+    if (selectedFile.value && selectedFile.value.isDir) {
+      finalPath = pathHelper.join(currentPath.value, selectedFile.value.name)
+    }
+    // 如果没选中任何东西，则返回当前停留的目录 (currentPath)
+    emit('file-selected', finalPath)
+  }
+  // 分支 B: 选择文件模式
+  else {
+    if (isSelectionConfirmed.value) {
+      emit('file-selected', pathHelper.join(currentPath.value, selectedFile.value.name))
+    } else {
+      ElMessage.warning('请选择一个符合要求的文件类型。')
+    }
+  }
 }
 
 function getItemClass(file) {

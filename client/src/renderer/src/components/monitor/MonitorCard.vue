@@ -1,4 +1,3 @@
-<!-- src/renderer/src/components/monitor/MonitorCard.vue -->
 <template>
   <div class="monitor-card-container">
     <div class="card-header drag-handle">
@@ -15,14 +14,16 @@
           <el-option
             v-for="robot in activeRobots"
             :key="robot.id"
-            :label="robot.name || robot.ip"
+            :label="robot.name"
             :value="robot.id"
           />
         </el-select>
 
         <!-- 2. 选择话题 -->
+        <!-- 增加 :key 强制重渲染 -->
         <el-select
-          v-model="localConfig.topicId"
+          :key="localConfig.backendId"
+          v-model="currentSelectId"
           placeholder="选择话题"
           size="small"
           filterable
@@ -31,8 +32,16 @@
           @change="handleTopicChange"
           @mousedown.stop
         >
-          <el-option v-for="ch in availableChannels" :key="ch.id" :label="ch.topic" :value="ch.id">
-            <span>{{ ch.topic }}</span>
+          <el-option
+            v-for="ch in sortedAndFilteredChannels"
+            :key="ch.id"
+            :label="ch.topic"
+            :value="ch.id"
+          >
+            <span style="float: left">{{ ch.topic }}</span>
+            <span style="float: right; color: #666; font-size: 10px; margin-left: 10px">{{
+              formatType(ch.schemaName)
+            }}</span>
           </el-option>
         </el-select>
 
@@ -45,12 +54,10 @@
     </div>
 
     <div class="card-body" @mousedown.stop>
-      <!-- 如果没连接 -->
       <el-empty v-if="!localConfig.backendId" description="请选择机器人" :image-size="60" />
-      <el-empty v-else-if="!localConfig.topicId" description="请选择话题" :image-size="60" />
+      <el-empty v-else-if="!localConfig.topicName" description="请选择话题" :image-size="60" />
 
-      <!-- 数据展示 -->
-      <component :is="visualizerComponent" v-else :data="messageData" :topic-type="topicType" />
+      <component :is="visualizerComponent" v-else :data="visualizedData" :topic-type="topicType" />
     </div>
   </div>
 </template>
@@ -64,110 +71,192 @@ import DataVisualizer from './DataVisualizer.vue'
 import ImageVisualizer from './ImageVisualizer.vue'
 
 const props = defineProps({
-  config: Object // { backendId, topicId, topicName }
+  config: Object
 })
 const emit = defineEmits(['remove', 'update:config'])
 
 const robotStore = useRobotStore()
-const { getTopics, subscribe, getMessage } = useFoxglove()
+const { getTopicsRef, subscribe, getMessage } = useFoxglove()
 
-// 本地配置副本
 const localConfig = reactive({
   backendId: props.config.backendId || '',
-  topicId: null, // ID 每次连接可能变，不从 props 恢复，而是通过 topicName 恢复
-  topicName: props.config.topicName || ''
+  topicName: props.config.topicName || '',
+  topicType: props.config.topicType || ''
 })
 
-// 获取所有已配置的机器人
-const activeRobots = computed(() => Object.values(robotStore.clients))
+// 用于绑定 el-select 的中间变量 (ID)
+const currentSelectId = ref(null)
 
-// 获取当前选中机器人的话题列表
-const availableChannels = computed(() => {
+const activeRobots = computed(() => {
+  return Object.entries(robotStore.clients).map(([key, client]) => ({
+    id: key,
+    name: client.name || client.ip || key
+  }))
+})
+
+// --- 话题列表数据流 ---
+
+// 1. 获取响应式引用
+const topicsRef = computed(() => {
   if (!localConfig.backendId) return []
-  return getTopics(localConfig.backendId)
+  return getTopicsRef(localConfig.backendId).value
 })
 
-// 自动恢复逻辑：当话题列表加载后，尝试根据 topicName 找回 topicId
+// 2. 排序与过滤
+const sortedAndFilteredChannels = computed(() => {
+  const list = topicsRef.value || []
+
+  const filtered = list.filter((ch) => {
+    const isNotRawImage = ch.schemaName !== 'sensor_msgs/Image'
+
+    // 【调试修改】暂时放宽条件
+    // 如果 isAlive 为 undefined (旧逻辑) 或者 true (新逻辑)，都显示
+    // 甚至可以暂时去掉 isAlive 的判断，只看 isNotRawImage
+
+    // 原逻辑：
+    const isAlive = ch.isAlive === true
+    const isSelected = ch.topic === localConfig.topicName
+    return isNotRawImage && (isAlive || isSelected)
+
+    // 新逻辑 (配合 useFoxglove 的乐观策略)：
+    // useFoxglove 保证了如果没有 graph update，isAlive 默认为 true
+    //return isNotRawImage && ch.isAlive !== false
+  })
+
+  return filtered.sort((a, b) => a.topic.localeCompare(b.topic))
+})
+
+// 3. [关键修复] 监听配置变化，同步 Select 显示 ID
 watch(
-  availableChannels,
-  (channels) => {
-    if (localConfig.topicName && !localConfig.topicId) {
-      const match = channels.find((c) => c.topic === localConfig.topicName)
+  () => localConfig.topicName,
+  (newName) => {
+    if (!newName) {
+      currentSelectId.value = null
+      return
+    }
+    // 尝试在当前列表中找对应的 ID
+    const match = sortedAndFilteredChannels.value.find((ch) => ch.topic === newName)
+    if (match) {
+      currentSelectId.value = match.id
+    } else {
+      // 如果名字有，但列表里没有（说明话题还没出现或已消亡），
+      // 我们保留 Select 显示为空，或者显示 Name（el-select 不支持 value 不在 option 里）
+      // 这里选择置空，等待话题出现
+      currentSelectId.value = null
+    }
+  },
+  { immediate: true }
+)
+
+// 4. [关键修复] 监听列表变化，自动匹配或清空
+watch(
+  sortedAndFilteredChannels,
+  (newList) => {
+    // 如果当前选中的话题名字还在，更新 ID (防止重连后 ID 变了)
+    if (localConfig.topicName) {
+      const match = newList.find((ch) => ch.topic === localConfig.topicName)
       if (match) {
-        localConfig.topicId = match.id
-        setupSubscription() // 恢复订阅
+        currentSelectId.value = match.id
+        // 确保订阅处于激活状态 (如果是重连恢复的情况)
+        setupSubscription()
+      } else {
+        // 话题消失了！
+        // 这种情况下，保持 topicName 不变（等待恢复），但 Select UI 变空
+        currentSelectId.value = null
       }
     }
   },
   { deep: true }
 )
 
-// 当前话题类型
+// --- 数据展示逻辑 ---
+
 const topicType = computed(() => {
-  if (!localConfig.topicId) return ''
-  const ch = availableChannels.value.find((c) => c.id === localConfig.topicId)
-  return ch?.schemaName || ''
+  if (!localConfig.topicName) return ''
+  // 优先用实时的类型，其次用配置的
+  const ch = sortedAndFilteredChannels.value.find((c) => c.topic === localConfig.topicName)
+  return ch?.schemaName || localConfig.topicType || ''
 })
 
 const visualizerComponent = computed(() => {
-  const type = (topicType.value || '').toLowerCase()
-  if (type.includes('image')) return ImageVisualizer
+  if (topicType.value.toLowerCase().includes('image')) return ImageVisualizer
   return DataVisualizer
 })
 
-// 数据订阅管理
+const formatType = (name) => (name ? name.split('/').pop() : '')
+
+// --- 订阅管理 ---
 let cleanupSub = null
 
 function setupSubscription() {
+  // 防抖：如果配置没变且已订阅，跳过 (useFoxglove 内部有计数，重复调用也没事，但为了性能)
   if (cleanupSub) cleanupSub()
-  if (localConfig.backendId && localConfig.topicId) {
-    cleanupSub = subscribe(localConfig.backendId, localConfig.topicId)
+
+  if (localConfig.backendId && localConfig.topicName) {
+    cleanupSub = subscribe(localConfig.backendId, localConfig.topicName, localConfig.topicType)
   }
 }
 
-// 获取实时消息
-const messageData = computed(() => {
-  return getMessage(localConfig.backendId, localConfig.topicId)
+const realTimeMessage = computed(() => {
+  return getMessage(localConfig.backendId, localConfig.topicName)
 })
 
-// 事件处理
+// --- 渲染节流 ---
+const visualizedData = ref(null)
+const messageCount = ref(0)
+const messageRate = ref(0)
+const lastRateCheck = ref(Date.now())
+const lastRenderTime = ref(0)
+const RENDER_INTERVAL = 100
+
+watch(realTimeMessage, (newMsg) => {
+  const now = Date.now()
+  messageCount.value++
+  if (now - lastRateCheck.value > 1000) {
+    messageRate.value = messageCount.value
+    messageCount.value = 0
+    lastRateCheck.value = now
+  }
+  if (now - lastRenderTime.value > RENDER_INTERVAL || !newMsg) {
+    visualizedData.value = newMsg
+    lastRenderTime.value = now
+  }
+})
+
+// --- 交互处理 ---
+
 function handleRobotChange() {
-  localConfig.topicId = null
   localConfig.topicName = ''
+  localConfig.topicType = ''
+  currentSelectId.value = null
   if (cleanupSub) cleanupSub()
   updateConfig()
 }
 
 function handleTopicChange(newId) {
-  const ch = availableChannels.value.find((c) => c.id === newId)
+  // 用户在下拉框选了 ID，我们需要存的是 Name
+  const ch = sortedAndFilteredChannels.value.find((c) => c.id === newId)
   if (ch) {
     localConfig.topicName = ch.topic
+    localConfig.topicType = ch.schemaName
+    // setupSubscription 会由 watch(localConfig.topicName) 触发吗？
+    // 不会，因为我们是在这里同步修改的。需要手动触发或等待 watch。
+    // 为了更直接的响应，手动调用：
     setupSubscription()
     updateConfig()
   }
 }
 
 function updateConfig() {
-  // 只向上层传需要持久化的数据 (ID, TopicName)
   emit('update:config', {
     backendId: localConfig.backendId,
-    topicName: localConfig.topicName
+    topicName: localConfig.topicName,
+    topicType: localConfig.topicType
   })
 }
 
-// 频率计算
-const messageCount = ref(0)
-const messageRate = ref(0)
-const lastTime = ref(Date.now())
-watch(messageData, () => {
-  messageCount.value++
-  const now = Date.now()
-  if (now - lastTime.value > 1000) {
-    messageRate.value = messageCount.value
-    messageCount.value = 0
-    lastTime.value = now
-  }
-})
+// 初始挂载
+if (localConfig.topicName) setupSubscription()
 
 onUnmounted(() => {
   if (cleanupSub) cleanupSub()
@@ -175,7 +264,7 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-/* 复用之前的 CSS，稍微增加Select宽度 */
+/* 保持原有样式 */
 .monitor-card-container {
   width: 100%;
   height: 100%;
@@ -230,5 +319,15 @@ onUnmounted(() => {
   overflow: auto;
   background: #141414;
   position: relative;
+}
+
+/* 滚动条 */
+.card-body::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.card-body::-webkit-scrollbar-thumb {
+  background: #444;
+  border-radius: 3px;
 }
 </style>

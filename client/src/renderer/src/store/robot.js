@@ -249,6 +249,19 @@ export const useRobotStore = defineStore('robot', () => {
         }
       })
     }
+    // 3. 检查录制进程是否存活
+    if (client.recordingId) {
+      const isRecordingAlive = processes.some((p) => p.id === client.recordingId)
+      if (!isRecordingAlive) {
+        console.warn(`Recording process ${client.recordingId} exited unexpectedly.`)
+        client.recordingId = null
+        ElNotification({
+          title: '录制已结束',
+          message: 'Rosbag 录制进程已退出或完成。',
+          type: 'info'
+        })
+      }
+    }
   }
 
   // [新增] 同步初始化占位符 (防止 UI 闪烁)
@@ -270,7 +283,8 @@ export const useRobotStore = defineStore('robot', () => {
         nodeLogs: {},
         terminals: [],
         logWs: null,
-        nextTerminalId: 1
+        nextTerminalId: 1,
+        recordingId: null
       }
     } else {
       // 如果已存在，重置状态
@@ -321,6 +335,7 @@ export const useRobotStore = defineStore('robot', () => {
         timer: null,
         ipChanged: false,
         isStackLoading: false,
+        recordingId: null,
         // 日志与终端相关
         nodeLogs: {}, // nodeLogs结构: { 'node_id': { status: 'running'|'stopped', lines: [] } }
         terminals: [], // terminals结构: [ { id: 1, name: '终端 1' } ]
@@ -723,6 +738,24 @@ export const useRobotStore = defineStore('robot', () => {
       if (action === 'stop' && client.nodes) {
         const stopPromises = []
 
+        // 优先停止录制 (确保数据写入磁盘)
+        // 必须在停止 Roscore 之前做，否则录制进程会异常退出导致文件损坏
+        if (client.recordingId) {
+          console.log('[AutoStop] Stopping active recording...')
+          try {
+            await client.api.post('/bag/stop', { id: client.recordingId })
+            client.recordingId = null
+            ElNotification({
+              title: '录制已保存',
+              message: '在停止服务前已自动结束录制并保存数据。',
+              type: 'success'
+            })
+          } catch (e) {
+            console.warn('[AutoStop] Failed to stop recording gracefully:', e)
+            // 不阻断后续流程，继续尝试停止服务
+          }
+        }
+
         client.nodes.forEach((n) => {
           // 针对所有运行中或启动中的节点
           if (n.status === 'running' || n.status === 'starting') {
@@ -949,9 +982,13 @@ export const useRobotStore = defineStore('robot', () => {
   const handleLogMessage = (client, msg) => {
     const { process_id, stream, data } = msg
 
-    // 1. 【修复】过滤掉全局 system 噪音
-    // 如果你不希望看到 "system" 这个 Tab，直接忽略它
-    if (!process_id || process_id === 'system') return
+    // 1. 【修复】过滤掉全局 system 噪音，以及后台托管进程(sys-*)
+    if (
+      !process_id ||
+      process_id === 'system' ||
+      process_id.startsWith('sys-') // <--- 新增屏蔽条件
+    )
+      return
 
     // 初始化该节点的日志对象
     if (!client.nodeLogs[process_id]) {
@@ -1241,6 +1278,36 @@ export const useRobotStore = defineStore('robot', () => {
       clipboard.value = null
     }
   }
+  // --- Rosbag 录制 Actions ---
+
+  // 13. [新增] 开始录制
+  const bagStart = async (clientId, options) => {
+    const client = clients[clientId]
+    if (!client || !client.api) return null
+
+    // Body: { path, name, topics, split, size }
+    try {
+      const res = await client.api.post('/bag/start', options)
+      // res: { status: "recording", id: "bag-...", file: "..." }
+
+      // 我们将录制进程 ID 记录到 client 状态中，方便 Dashboard 监控
+      client.recordingId = res.id
+      return res
+    } catch (e) {
+      console.error('Bag start failed:', e)
+      throw e
+    }
+  }
+  // 14. [新增] 停止录制
+  const bagStop = async (clientId, recordId) => {
+    const client = clients[clientId]
+    if (!client || !client.api) return
+    await client.api.post('/bag/stop', { id: recordId })
+    // 清除 ID
+    if (client.recordingId === recordId) {
+      client.recordingId = null
+    }
+  }
 
   return {
     clients,
@@ -1280,6 +1347,8 @@ export const useRobotStore = defineStore('robot', () => {
     fsDeletePermanent,
     fsRestore,
     fsUpload,
-    fsPaste
+    fsPaste,
+    bagStart,
+    bagStop
   }
 })
