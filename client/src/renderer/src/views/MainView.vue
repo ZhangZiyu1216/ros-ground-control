@@ -1,249 +1,242 @@
 <template>
-  <el-container class="app-container">
-    <el-header class="app-title-header">
-      <div class="info-left">
-        <img :src="logoURL" alt="App Logo" class="header-logo" />
-        <h1>ROS Ground Control</h1>
-      </div>
-      <div class="button-right">
-        <el-divider direction="vertical" :class="{ 'is-inactive': !isWindowFocused }" />
-        <el-button
-          type="primary"
-          circle
-          :class="{ 'is-inactive': !isWindowFocused }"
-          @click="openEditorWindow"
-        >
-          <el-icon :size="16"> <EditPen /> </el-icon>
-        </el-button>
-        <el-divider direction="vertical" :class="{ 'is-inactive': !isWindowFocused }" />
-        <el-button
-          type="primary"
-          circle
-          :class="{ 'is-inactive': !isWindowFocused }"
-          :disabled="isConnected"
-          @click="showSettings = true"
-        >
-          <el-icon :size="16"> <Tools /> </el-icon>
-        </el-button>
-        <el-divider direction="vertical" :class="{ 'is-inactive': !isWindowFocused }" />
-        <el-button
-          type="primary"
-          circle
-          :class="{ 'is-inactive': !isWindowFocused }"
-          :disabled="isConnected"
-          @click="dialogVisible = true"
-        >
-          <el-icon :size="16"> <InfoFilled /> </el-icon>
-        </el-button>
-        <el-divider direction="vertical" :class="{ 'is-inactive': !isWindowFocused }" />
-      </div>
-    </el-header>
-    <el-main>
-      <el-tabs v-model="activeTab" type="border-card" tab-position="left" class="main-tabs">
-        <el-tab-pane name="dashboard">
-          <template #label>
-            <div class="tabs-title">
-              <el-icon :size="24"> <Grid /> </el-icon>
-              <span class="vertical-tab-label">节点控制</span>
-            </div>
-          </template>
-          <Dashboard
-            :current-backend-id="currentBackendId"
-            :is-current-backend-ready="isCurrentBackendReady"
-          />
-        </el-tab-pane>
-        <el-tab-pane name="monitor">
-          <template #label>
-            <div class="tabs-title">
-              <el-icon :size="24"> <Monitor /> </el-icon>
-              <span class="vertical-tab-label">话题监控</span>
-            </div>
-          </template>
-          <TopicMonitor
-            :current-backend-id="currentBackendId"
-            :is-current-backend-ready="isCurrentBackendReady"
-          />
-        </el-tab-pane>
-        <el-tab-pane name="logs">
-          <template #label>
-            <div class="tabs-title">
-              <el-icon :size="24"> <DataBoard /> </el-icon>
-              <span class="vertical-tab-label">终端日志</span>
-            </div>
-          </template>
-          <LogManager :current-backend-id="currentBackendId" />
-        </el-tab-pane>
-      </el-tabs>
-    </el-main>
-
-    <el-footer class="app-footer">
-      <div class="footer-left-controls">
-        <div class="connection-config">
-          <!-- 使用 Popover 实现向上展开的列表 -->
-          <el-popover
-            v-model:visible="isPopoverVisible"
-            placement="top-start"
-            :width="280"
-            trigger="hover"
-            :show-after="50"
-            :hide-after="50"
-            popper-class="backend-list-popover"
-          >
-            <template #reference>
-              <div class="popover-trigger-wrapper">
-                <el-button
-                  class="connection-status-button"
-                  :type="backendStatusProps.type"
-                  :icon="backendStatusProps.icon"
-                  :style="{
-                    '--el-button-text-color': backendStatusProps.color,
-                    '--el-button-disabled-text-color': backendStatusProps.color
-                  }"
-                  :loading="
-                    currentBackendStatus === 'setting_up' || currentBackendStatus === 'tearing_down'
-                  "
-                  round
-                  text
-                  @click="handleConfigButtonClick"
-                >
-                  <!-- 显示文本逻辑：如果是 Local 且没名字，显示 Local；否则显示名字或 User@Host -->
-                  <span class="connection-btn-contain">{{ backendStatusProps.text }}</span>
-                </el-button>
-              </div>
-            </template>
-
-            <!-- 弹出层内容：连接列表 -->
-            <div class="backend-list-container">
-              <div class="backend-list-header">可用连接</div>
-              <el-scrollbar max-height="300px">
-                <div
-                  v-for="(item, index) in savedBackends"
-                  :key="index"
-                  class="backend-item"
-                  :class="{ 'is-active': isActiveBackend(item), 'is-disabled': isAnyLoading }"
-                  @click="switchToBackend(item)"
-                >
-                  <div class="status-dot-container">
-                    <!-- 使用动态 class 绑定颜色 -->
-                    <div class="list-status-dot" :class="getItemStatus(item)"></div>
-                  </div>
-                  <div class="backend-info">
-                    <div class="backend-name">{{ getBackendDisplayName(item) }}</div>
-                    <div class="backend-detail">
-                      {{ item.settings.mode === 'local' ? 'Localhost' : item.settings.ip }}
-                    </div>
-                  </div>
-                  <!-- 悬浮操作按钮 -->
-                  <div class="backend-actions" @click.stop>
-                    <!-- 如果未运行，显示“删除”按钮 -->
-                    <el-button
-                      v-if="!isBackendRunning(item) && !isDefaultLocalBackend(item)"
-                      circle
-                      type="danger"
-                      link
-                      title="删除连接"
-                      @click="deleteBackend(index)"
-                    >
-                      <el-icon><Delete /></el-icon>
-                    </el-button>
-                    <!-- 如果已连接，显示“断开”按钮 -->
-                    <el-button
-                      v-if="getItemStatus(item) === 'ready'"
-                      circle
-                      type="danger"
-                      link
-                      title="断开连接"
-                      @click="handleManualDisconnect(item)"
-                    >
-                      <el-icon><SwitchButton /></el-icon>
-                    </el-button>
-                    <!-- 如果未运行，显示“编辑”按钮 -->
-                    <el-button
-                      v-if="!isBackendRunning(item) && !isDefaultLocalBackend(item)"
-                      circle
-                      type="primary"
-                      link
-                      title="编辑连接"
-                      @click="openEditDialog(index, item)"
-                    >
-                      <el-icon><Edit /></el-icon>
-                    </el-button>
-                  </div>
-                  <!-- 选中标记 -->
-                  <div v-if="isActiveBackend(item)" class="active-check">
-                    <el-icon><Check /></el-icon>
-                  </div>
-                </div>
-              </el-scrollbar>
-
-              <el-divider style="margin: 8px 0" />
-
-              <!-- 添加新连接按钮 -->
-              <div
-                class="add-buttons-wrapper"
-                @mouseenter="handleAddHover(true)"
-                @mouseleave="handleAddHover(false)"
-              >
-                <transition-group
-                  name="btn-slide"
-                  tag="div"
-                  class="add-buttons-container"
-                  :class="{ 'is-hovered': isHoveringAdd }"
-                >
-                  <!-- 1. 原有的“添加新连接”按钮 -->
-                  <!-- key 是 transition-group 必需的 -->
-                  <div key="add-new" class="add-backend-btn" @click.stop="openAddDialog">
-                    <el-icon><Plus /></el-icon>
-                    <span>添加新连接</span>
-                  </div>
-                  <!-- 2. 新增的“首次部署”按钮 -->
-                  <div
-                    v-if="showFirstTimeSetupButton"
-                    key="first-setup"
-                    class="add-backend-btn primary-style"
-                    @click.stop="openFirstTimeSetupDialog"
-                  >
-                    <el-icon><MagicStick /></el-icon>
-                    <span>首次连接</span>
-                  </div>
-                </transition-group>
-              </div>
-            </div>
-          </el-popover>
+  <div class="app-container">
+    <!-- 1. Header: 顶部工具栏 -->
+    <header class="app-glass-header drag-region">
+      <div class="header-left">
+        <div class="app-branding">
+          <span class="app-name">ROS Ground Control</span>
         </div>
+      </div>
 
-        <div class="connect-toggle-button">
+      <div class="header-right no-drag">
+        <!-- 功能按钮组 -->
+        <div class="function-buttons">
+          <el-button text round class="win-func-btn" @click="openEditorWindow">
+            <el-icon><EditPen /></el-icon>
+            <span>编辑</span>
+          </el-button>
           <el-button
-            :type="isConnected ? 'danger' : 'success'"
-            :loading="isActionInProgress"
-            :disabled="!isCurrentBackendReady"
+            text
             round
-            plain
-            @click="toggleServiceConnection"
+            class="win-func-btn"
+            :disabled="isConnected"
+            @click="showSettings = true"
           >
-            {{ connectionButtonText }}
+            <el-icon><Tools /></el-icon>
+            <span>设置</span>
+          </el-button>
+          <el-button
+            text
+            round
+            class="win-func-btn"
+            :disabled="isConnected"
+            @click="dialogVisible = true"
+          >
+            <el-icon><InfoFilled /></el-icon>
+            <span>关于</span>
           </el-button>
         </div>
+
+        <!-- Windows 风格窗口控制 -->
+        <div class="window-controls windows-style">
+          <div class="win-ctrl-btn min" @click="minimizeWindow">
+            <el-icon><Minus /></el-icon>
+          </div>
+          <div class="win-ctrl-btn max" @click="maximizeWindow">
+            <el-icon><FullScreen /></el-icon>
+          </div>
+          <div class="win-ctrl-btn close" @click="closeWindow">
+            <el-icon><Close /></el-icon>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <!-- 2. Main: 内容区域 -->
+    <main class="app-main-content">
+      <div v-show="activeTab === 'dashboard'" class="view-wrapper">
+        <Dashboard
+          :current-backend-id="currentBackendId"
+          :is-current-backend-ready="isCurrentBackendReady"
+        />
+      </div>
+      <div v-show="activeTab === 'monitor'" class="view-wrapper">
+        <TopicMonitor
+          :current-backend-id="currentBackendId"
+          :is-current-backend-ready="isCurrentBackendReady"
+        />
+      </div>
+      <div v-show="activeTab === 'logs'" class="view-wrapper">
+        <LogManager :current-backend-id="currentBackendId" />
+      </div>
+    </main>
+
+    <!-- 3. Footer: 底部栏 -->
+    <footer class="app-glass-footer">
+      <!-- Left: 连接配置 -->
+      <div class="footer-section left">
+        <!-- 1. 连接列表按钮 (最宽, flex: 2) -->
+        <el-popover
+          v-model:visible="isPopoverVisible"
+          placement="top-start"
+          :width="320"
+          trigger="hover"
+          :show-after="100"
+          :hide-after="200"
+          popper-class="backend-list-popover"
+          :show-arrow="false"
+          :offset="15"
+        >
+          <template #reference>
+            <el-button
+              class="current-conn-btn"
+              :type="backendStatusProps.type"
+              text
+              :style="{
+                '--el-button-text-color': backendStatusProps.color,
+                '--el-button-hover-text-color': backendStatusProps.color,
+                '--el-button-active-text-color': backendStatusProps.color
+              }"
+              @click="handleConfigButtonClick"
+            >
+              <el-icon :class="{ 'is-loading': currentBackendStatus === 'setting_up' }">
+                <component :is="backendStatusProps.icon" />
+              </el-icon>
+              <span class="conn-text">{{ backendStatusProps.text }}</span>
+            </el-button>
+          </template>
+
+          <!-- Popover 内容 (保持不变) -->
+          <div class="backend-list-container">
+            <el-divider class="backend-list-header" content-position="left">可用连接</el-divider>
+            <el-scrollbar max-height="280px">
+              <div
+                v-for="(item, index) in savedBackends"
+                :key="index"
+                class="backend-item"
+                :class="{ 'is-active': isActiveBackend(item), 'is-disabled': isAnyLoading }"
+                @click="!isAnyLoading && switchToBackend(item)"
+              >
+                <div class="status-dot-container">
+                  <div class="list-status-dot" :class="getItemStatus(item)"></div>
+                </div>
+                <div class="backend-info">
+                  <div class="backend-name">{{ getBackendDisplayName(item) }}</div>
+                  <div class="backend-detail">
+                    {{ item.settings.mode === 'local' ? 'Localhost' : item.settings.ip }}
+                  </div>
+                </div>
+                <div class="backend-actions" @click.stop>
+                  <el-button
+                    v-if="!isBackendRunning(item) && !isDefaultLocalBackend(item)"
+                    link
+                    class="action-icon del"
+                    @click="deleteBackend(index)"
+                    ><el-icon><Delete /></el-icon
+                  ></el-button>
+                  <el-button
+                    v-if="getItemStatus(item) === 'ready'"
+                    link
+                    class="action-icon stop"
+                    @click="handleManualDisconnect(item)"
+                    ><el-icon><SwitchButton /></el-icon
+                  ></el-button>
+                  <el-button
+                    v-if="!isBackendRunning(item) && !isDefaultLocalBackend(item)"
+                    link
+                    class="action-icon edit"
+                    @click="openEditDialog(index, item)"
+                    ><el-icon><Edit /></el-icon
+                  ></el-button>
+                </div>
+                <div v-if="isActiveBackend(item)" class="active-check">
+                  <el-icon><Check /></el-icon>
+                </div>
+              </div>
+            </el-scrollbar>
+            <div
+              class="add-buttons-row"
+              @mouseenter="handleAddHover(true)"
+              @mouseleave="handleAddHover(false)"
+            >
+              <div class="add-btn-base" @click.stop="openAddDialog">
+                <el-icon><Plus /></el-icon><span>新建连接</span>
+              </div>
+              <div
+                class="slide-wrapper"
+                :class="{ 'is-open': showFirstTimeSetupButton && isHoveringAdd }"
+              >
+                <div class="add-btn-slide orange-style" @click.stop="openFirstTimeSetupDialog">
+                  <el-icon><MagicStick /></el-icon><span>首次连接</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </el-popover>
+
+        <!-- 分割线 -->
+        <div class="footer-divider"></div>
+
+        <!-- 连接切换按钮 -->
+        <el-button
+          class="connect-switch-btn"
+          :type="isConnected ? 'danger' : 'success'"
+          :loading="isActionInProgress"
+          :disabled="!isCurrentBackendReady"
+          plain
+          @click="toggleServiceConnection"
+        >
+          {{ connectionButtonText }}
+        </el-button>
       </div>
 
-      <div class="status-indicators">
-        <div class="status-item">
-          <span>Roscore:</span>
-          <el-tag :type="roscoreProps.type" effect="dark" size="small" round>
-            <span class="dot" :class="roscoreStatus"></span>
-            {{ roscoreProps.text }}
-          </el-tag>
-        </div>
-        <div class="status-item">
-          <span>Rosbridge:</span>
-          <el-tag :type="rosbridgeProps.type" effect="dark" size="small" round>
-            <span class="dot" :class="rosbridgeStatus"></span>
-            {{ rosbridgeProps.text }}
-          </el-tag>
+      <!-- Center: 核心导航 -->
+      <div class="footer-section center">
+        <div class="nav-capsule">
+          <div
+            class="nav-item"
+            :class="{ 'is-active': activeTab === 'dashboard' }"
+            @click="activeTab = 'dashboard'"
+          >
+            <el-icon><Grid /></el-icon><span>节点</span>
+          </div>
+          <div
+            class="nav-item"
+            :class="{ 'is-active': activeTab === 'monitor' }"
+            @click="activeTab = 'monitor'"
+          >
+            <el-icon><Monitor /></el-icon><span>监控</span>
+          </div>
+          <div
+            class="nav-item"
+            :class="{ 'is-active': activeTab === 'logs' }"
+            @click="activeTab = 'logs'"
+          >
+            <el-icon><DataBoard /></el-icon><span>日志</span>
+          </div>
         </div>
       </div>
-    </el-footer>
-  </el-container>
+
+      <!-- Right: 状态指示器 -->
+      <div class="footer-section right">
+        <!-- Roscore Status -->
+        <div class="status-block" :class="roscoreProps.type">
+          <span class="block-label">Core</span>
+          <span class="block-value">{{ roscoreProps.text }}</span>
+          <div class="block-dot" :class="roscoreStatus"></div>
+        </div>
+
+        <!-- Rosbridge Status -->
+        <div class="status-block" :class="rosbridgeProps.type">
+          <span class="block-label">Bridge</span>
+          <span class="block-value">{{ rosbridgeProps.text }}</span>
+          <div class="block-dot" :class="rosbridgeStatus"></div>
+        </div>
+      </div>
+    </footer>
+  </div>
+
+  <!-- Dialogs (不变) -->
   <ConnectionDialog
     v-model:visible="dialogVisible"
     :initial-data="dialogInitialData"
@@ -289,9 +282,14 @@ import {
   Plus,
   SwitchButton,
   EditPen,
-  MagicStick
+  MagicStick,
+  Minus,
+  FullScreen
 } from '@element-plus/icons-vue'
-import logoURL from '../../../../resources/icon.png'
+
+const minimizeWindow = () => window.electronWindow?.minimize()
+const maximizeWindow = () => window.electronWindow?.toggleMaximize()
+const closeWindow = () => window.electronWindow?.close()
 
 // [新增] 全局应用设置
 const showSettings = ref(false)
@@ -1032,439 +1030,585 @@ watch([roscoreStatus, rosbridgeStatus], ([newRscore, newRbridge], [oldRscore, ol
 // #endregion
 </script>
 
-<style>
-@font-face {
-  font-family: 'consola'; /* <-- 给你的字体起一个在CSS中使用的名字 */
-  src: url('/fonts/consola.ttf') format('ttf'); /* <-- 引用 public 目录下的字体文件 */
-  font-weight: normal; /* 定义这个字体文件对应的字重 */
-  font-style: normal; /* 定义这个字体文件对应的样式 */
-}
-
-/* 2. 应用根容器：使用 Flexbox 垂直布局 */
+<style scoped>
+/* ============================================
+   1. 布局变量
+   ============================================ */
 .app-container {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-.app-container .el-main {
-  height: auto;
-  width: auto;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-.el-header.app-title-header {
-  height: 50px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  background-color: #2c3e50; /* 一个深色的头部背景 */
-  color: #ffffff; /* 白色文字 */
-  -webkit-app-region: drag;
-  padding-left: 20px;
-  padding-right: 110px;
-}
-.app-title-header .info-left {
-  display: flex;
-  align-items: center; /* 垂直居中 Logo 和标题 */
-  gap: 20px; /* 在 Logo 和标题之间创建一些间距 */
-  flex-direction: row;
-  justify-content: center;
-}
-.app-title-header .header-logo {
-  height: 1.2em; /* 控制 Logo 的高度，宽度会自动缩放 */
-  width: auto;
-  object-fit: contain; /* 确保图片在保持比例的同时完整显示 */
-}
-.app-title-header .button-right {
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  gap: 0px;
-}
-.app-title-header .button-right .el-divider.is-inactive {
-  color: #ffffff;
-}
-.app-title-header .button-right .el-divider.is-inactive {
-  color: #999999;
-}
-.app-title-header .button-right .el-button {
-  background-color: #2c3e50;
-  border: 0px solid #2c3e50;
-  margin-left: -5px;
-  margin-right: -5px;
-  padding: 0px;
-  transition: all 0.3s ease-out;
-  -webkit-app-region: no-drag;
-}
-.app-title-header .button-right .el-button.is-inactive {
-  color: #999999;
-}
-.app-title-header .button-right .el-button:hover {
-  transform: scale(1.1);
-}
-.app-title-header .button-right .el-button:hover,
-.app-title-header .button-right .el-button:focus {
-  background-color: rgba(255, 255, 255, 0.1);
-  border: 0px solid #2c3e50;
-}
-.app-title-header h1 {
-  margin: 0; /* 去掉 h1 标签的默认边距 */
-  font-size: 20px;
-}
+  --bg-color: #f6f8fa;
+  --glass-bg: rgba(255, 255, 255, 0.85);
+  --glass-border: rgba(255, 255, 255, 0.6);
+  --text-primary: #303133;
+  --text-secondary: #606266;
+  --header-height: 48px;
+  --footer-height: 58px; /* 底部稍微高一点放导航 */
 
-/* 3. Tabs 组件：让它弹性增长以填满剩余空间 */
-.main-tabs {
-  flex-grow: 1;
-  display: flex;
-  flex-direction: row;
-}
-.main-tabs > .el-tabs__content {
-  flex-grow: 1;
-  padding: 5px;
-}
-.el-tabs--left.el-tabs--border-card .el-tabs__header.is-left {
-  height: 100%;
-  display: flex;
-  margin: 0;
-}
-.el-tabs__nav.is-left {
-  height: 100%;
-  display: flex; /* <-- 关键：将其变为 Flex 容器 */
-  flex-direction: column; /* 让 tab 垂直排列 */
-}
-.el-tabs__item.is-left {
-  flex-grow: 1;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  padding: 0 20px;
-  height: auto;
-}
-.tabs-title {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 0.8em;
-}
-.vertical-tab-label {
-  font-size: 20px;
-  writing-mode: vertical-lr; /* <-- 关键：开启垂直书写模式 */
-  letter-spacing: 0.1em; /* (可选) 增加字间距，让垂直文字更好看 */
-  line-height: 1; /* (可选) 调整行高，让文字更紧凑 */
-  padding-right: 0.2em;
-}
-
-/* 5. 确保每个 Tab Pane 都是块级布局并占满高度 */
-.el-tabs--border-card {
-  background: transparent;
-  border: none;
-}
-
-.el-tab-pane {
   height: 100%;
   width: 100%;
-}
-.el-tabs__content {
-  background-color: transparent;
-  padding: 20px; /* 增加一些内边距，让卡片不贴边 */
-}
-
-/* 6. Footer 样式 */
-.el-footer.app-footer {
-  height: 50px;
-  border-top: 1px solid #e4e7ed;
-  background-color: #f5f7fa;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-/* 左侧和中间按钮的容器 */
-.footer-left-controls {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-/* 1. 配置按钮的样式 */
-.connection-config .connection-status-button {
-  height: 30px;
-  margin-left: -8px;
-}
-.connection-config .connection-status-button .connection-btn-contain {
-  font-size: 16px;
-}
-/* 调整原按钮，支持图标右对齐 */
-.connection-status-button {
-  padding-right: 8px !important; /* 给箭头留点空间 */
-}
-/* Popover 内部容器 */
-.connection-config .popover-trigger-wrapper {
-  display: inline-block; /* 确保 wrapper 包裹住按钮且不独占一行 */
-  display: flex;
-  transition: transform 0.2s ease-in-out;
-}
-.connection-config .popover-trigger-wrapper:hover {
-  transform: scale(1.02);
-}
-.connection-config .popover-trigger-wrapper:active {
-  transform: scale(0.98);
-}
-.backend-list-container {
   display: flex;
   flex-direction: column;
+  background-color: var(--bg-color);
+  overflow: hidden;
+  font-family: 'Segoe UI', sans-serif;
 }
-.backend-list-header {
-  font-size: 12px;
-  color: #909399;
-  margin-bottom: 8px;
-  padding-left: 4px;
+
+:global(html.dark) .app-container {
+  --bg-color: #141414;
+  --glass-bg: rgba(30, 30, 30, 0.85);
+  --glass-border: rgba(255, 255, 255, 0.1);
+  --text-primary: #e5eaf3;
+  --text-secondary: #a3a6ad;
 }
-/* 容器 Wrapper */
-/* 增加这个 wrapper 是为了精确控制 hover 区域 */
-.add-buttons-wrapper {
-  padding: 5px 0; /* 给一点垂直内边距 */
-  min-height: 40px;
+
+/* 拖拽区域 */
+.drag-region {
+  -webkit-app-region: drag;
 }
-/* 按钮容器，现在是 transition-group 的子元素 */
-.add-buttons-container {
+.no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* ============================================
+   2. Header (Glass)
+   ============================================ */
+.app-glass-header {
+  height: var(--header-height);
+  background: var(--glass-bg);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--glass-border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 0 0 20px;
+  z-index: 100;
+}
+
+.app-branding {
   display: flex;
   align-items: center;
   gap: 10px;
 }
-/* 原始“添加”按钮样式 (保持不变) */
-.add-backend-btn {
+.app-name {
+  font-weight: 800;
+  font-size: 24px; /* 增大字号 */
+  letter-spacing: 1px;
+  background: linear-gradient(90deg, #409eff, #337ecc);
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  padding-left: 6px;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  height: 100%;
+}
+
+/* 功能按钮组 */
+.function-buttons {
+  display: flex;
+  gap: 8px;
+  padding-right: 10px;
+}
+.function-buttons .el-button {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  padding: 8px 12px;
+}
+.function-buttons .el-button:hover {
+  background: rgba(0, 0, 0, 0.05);
+  color: var(--text-primary);
+}
+:global(html.dark) .function-buttons .el-button:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+/* 自定义窗口控制按钮 */
+/* [需求3] Windows 风格窗口控制 */
+.window-controls.windows-style {
+  display: flex;
+  height: 100%;
+  align-items: flex-start;
+  -webkit-app-region: no-drag;
+}
+
+.win-ctrl-btn {
+  width: 48px; /* Windows 标准宽度 */
+  height: 100%; /* 填满 Header */
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 5px;
-  padding: 8px;
+  color: var(--text-primary);
+  transition: all 0.2s;
   cursor: pointer;
-  color: #606266;
-  font-size: 13px;
-  border-radius: 4px;
-  border: 1px dashed #dcdfe6;
-  white-space: nowrap;
-  box-sizing: border-box; /* 确保 padding 不会影响宽度计算 */
-  white-space: nowrap;
-  width: 100%;
-  transition: all 0.3s ease;
+  font-size: 14px;
+  border-radius: 0 !important; /* [重点] 强制直角 */
 }
-.add-backend-btn:hover,
-.add-backend-btn.primary-style:hover {
+
+.win-ctrl-btn:hover {
+  background-color: rgba(0, 0, 0, 0.05);
+}
+.win-ctrl-btn.close:hover {
+  background-color: #e81123;
+  color: white;
+}
+:global(html.dark) .win-ctrl-btn:hover {
+  background-color: rgba(255, 255, 255, 0.1);
+}
+:global(html.dark) .win-ctrl-btn.close:hover {
+  background-color: #e81123;
+}
+
+/* ============================================
+   3. Main Content
+   ============================================ */
+.app-main-content {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+}
+.view-wrapper {
+  height: 100%;
+  width: 100%;
+  /* 确保 Dashboard 内部也能撑满 */
+  display: flex;
+  flex-direction: column;
+}
+
+/* ============================================
+   4. Footer (Glass & Navigation)
+   ============================================ */
+.app-glass-footer {
+  height: var(--footer-height);
+  display: flex;
+  align-items: center;
+  gap: 20px; /* 区块间距 */
+}
+
+/* 左侧区域 */
+.footer-section.left {
+  display: flex;
+  margin-left: 6px;
+  align-items: center;
+  gap: 4px;
+  width: 100%; /* 填满 grid cell */
+}
+/* [需求3] 左侧百分比宽度 */
+.current-conn-btn {
+  width: auto; /* 防止溢出 */
+  height: 32px;
+  justify-content: flex-start;
+  border: 1px solid transparent;
+  transition: all 0.3s;
+}
+.current-conn-btn:hover {
+  transform: scale(1.02);
+  background: transparent;
+}
+.connect-switch-btn {
+  width: 120px;
+  height: 32px;
+  border-radius: 16px;
+  padding: 0;
+}
+/* 连接按钮内的文字截断 */
+.conn-text {
+  flex: 1;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin: 0 0px;
+  font-size: 18px;
+}
+
+/* 中间：胶囊导航 (Nav Capsule) */
+.nav-capsule {
+  width: auto;
+  display: flex;
+  background: rgba(128, 128, 128, 0.08);
+  padding: 4px;
+  border-radius: 24px;
+  border: 1px solid var(--glass-border);
+  gap: 2px;
+}
+.nav-item {
+  display: flex;
+  width: 56px;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 20px;
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: 16px;
+  font-weight: 500;
+  transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+}
+.nav-item:hover {
+  background: rgba(255, 255, 255, 0.5);
+  color: var(--text-primary);
+}
+.nav-item.is-active {
+  background: white;
+  color: #409eff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+:global(html.dark) .nav-item.is-active {
+  background: #333;
+  color: #409eff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+/* 右侧区域 */
+.footer-section.right {
+  display: flex;
+  margin-right: 20px;
+  justify-content: flex-end; /* 靠右对齐 */
+  gap: 10px;
+  width: 100%;
+}
+.status-block {
+  width: 108px;
+  height: 32px; /* [需求3] 高度减小，与按钮一致 */
+  padding: 0 10px;
+  border-radius: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: rgba(128, 128, 128, 0.08);
+}
+
+.block-label {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  width: 60px;
+}
+
+.block-value {
+  font-family: 'consola', monospace; /* 你的等宽字体 */
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-right: auto; /* 靠左推 */
+  white-space: nowrap;
+}
+
+.block-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #dcdfe6;
+  flex-shrink: 0;
+  margin-left: 8px;
+}
+
+/* --- 状态颜色映射 (对应 props.type) --- */
+/* Success (Green) */
+.status-block.success {
+  background: rgba(103, 194, 58, 0.1);
+  border-color: rgba(103, 194, 58, 0.2);
+  color: #67c23a;
+}
+.status-block.success .block-value {
+  color: #67c23a;
+}
+.status-block.success .block-dot {
+  background: #67c23a;
+  box-shadow: 0 0 6px rgba(103, 194, 58, 0.4);
+}
+
+/* Danger / Error (Red) */
+.status-block.danger,
+.status-block.error {
+  background: rgba(245, 108, 108, 0.1);
+  border-color: rgba(245, 108, 108, 0.2);
+}
+.status-block.danger .block-value {
+  color: #f56c6c;
+}
+.status-block.danger .block-dot {
+  background: #f56c6c;
+  box-shadow: 0 0 6px rgba(245, 108, 108, 0.4);
+}
+
+/* Warning (Orange) */
+.status-block.warning {
+  background: rgba(230, 162, 60, 0.1);
+  border-color: rgba(230, 162, 60, 0.2);
+}
+.status-block.warning .block-value {
+  color: #e6a23c;
+}
+.status-block.warning .block-dot {
+  background: #e6a23c;
+  box-shadow: 0 0 6px rgba(230, 162, 60, 0.4);
+}
+
+/* Info / Disconnected (Gray) */
+.status-block.info {
+  background: rgba(144, 147, 153, 0.1);
+  border-color: rgba(144, 147, 153, 0.2);
+}
+.status-block.info .block-dot {
+  background: #909399;
+}
+
+/* ============================================
+   5. Popover 内部样式 (Fixed Layout & Animation)
+   ============================================ */
+/* 列表项文字截断修复 */
+.backend-info {
+  flex: 1;
+  min-width: 0; /* 关键：允许 flex 子项收缩 */
+  margin: 0 8px;
+}
+.backend-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+/* 新建连接 - 横向滑动动画修复 */
+.add-buttons-row {
+  display: flex;
+  align-items: center;
+  overflow: hidden; /* 隐藏滑出的部分 */
+}
+
+.add-btn-base {
+  flex: 1; /* 默认占满 */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px;
+  margin-top: 4px;
+  border-radius: 8px;
+  border: 1px dashed #dcdfe6;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.3s;
+  white-space: nowrap;
+}
+.add-btn-base:hover {
   border-color: #409eff;
   color: #409eff;
-  background-color: #ecf5ff;
-}
-.add-buttons-container.is-hovered .add-backend-btn {
-  width: calc(50% - 5px);
+  background: rgba(64, 158, 255, 0.05);
 }
 
-/* “首次部署”按钮的特殊样式 */
-.add-backend-btn.primary-style {
+/* 滑动容器 */
+.slide-wrapper {
+  width: 0; /* 初始宽度 0 */
+  opacity: 0;
+  overflow: hidden;
+  transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+.slide-wrapper.is-open {
+  width: 140px; /* 展开后的宽度 */
+  opacity: 1;
+  margin-left: 8px;
+}
+
+.add-btn-slide {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px;
+  border-radius: 8px;
+  border: 1px dashed #67c23a;
+  color: #67c23a;
+  background: rgba(103, 194, 58, 0.05);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.add-btn-slide:hover {
+  background: rgba(103, 194, 58, 0.1);
+  transform: scale(1.02);
+}
+</style>
+
+<style>
+/* ============================================
+   5. 全局组件样式 (Popovers & Dialogs)
+   ============================================ */
+
+/* 覆盖 Popover 默认样式，使其变成玻璃卡片风格 */
+.el-popover.backend-list-popover {
+  /* 适配深色模式的 CSS 变量需确保在此作用域生效，或者使用硬编码 fallback */
+  --popover-bg: rgba(255, 255, 255, 0.9);
+  --popover-border: #e4e7ed;
+  --item-hover: #f5f7fa;
+  --text-main: #303133;
+  --text-sub: #909399;
+}
+
+html.dark .el-popover.backend-list-popover {
+  --popover-bg: rgba(30, 30, 30, 0.95);
+  --popover-border: #4c4d4f;
+  --item-hover: rgba(255, 255, 255, 0.05);
+  --text-main: #e5eaf3;
+  --text-sub: #a3a6ad;
+}
+
+.el-popover.backend-list-popover {
+  padding: 12px !important;
+  border-radius: 12px !important;
+  border: 1px solid var(--popover-border) !important;
+  background: var(--popover-bg) !important;
+  backdrop-filter: blur(12px);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15) !important;
+}
+
+/* 列表容器 */
+.backend-list-container {
+  display: flex;
+  flex-direction: column;
+}
+.el-divider.backend-list-header {
+  font-size: 8px;
+  font-weight: 400;
+  color: var(--text-sub);
+  margin-top: 12px;
+  margin-bottom: 18px;
+  margin-left: 3px;
+  width: 98.5%;
+}
+.el-divider.backend-list-header .el-divider__text {
+  /* 1. 修改字体大小和颜色 */
+  font-size: 12px;
+  font-weight: 400;
+  color: #909399; /* var(--text-secondary) */
+  letter-spacing: 0.5px;
+  background-color: var(--popover-bg);
+}
+
+/* 深色模式适配 */
+html.dark .el-divider.backend-list-header {
+  border-color: rgba(255, 255, 255, 0.1);
+}
+html.dark .el-divider.backend-list-header .el-divider__text {
   color: #606266;
-  font-size: 13px;
-  border-radius: 4px;
-  border: 1px dashed #dcdfe6;
-  white-space: nowrap;
-  box-sizing: border-box; /* 确保 padding 不会影响宽度计算 */
-  white-space: nowrap;
-}
-/* 定义进入和离开时的动画 */
-.btn-slide-enter-active {
-  transition: all 0.3s ease;
-  overflow: hidden;
-}
-.btn-slide-leave-active {
-  right: 0;
-  transition: all 0.3s ease;
-  overflow: hidden;
-}
-/* 进入前 和 离开后 的状态 */
-.btn-slide-enter-from {
-  opacity: 0;
-  transform: scale(0.8);
-  /* 初始宽度为0，让它平滑地“长”出来 */
-  width: 0;
-  padding: 0;
-  margin-left: 0 !important;
-}
-.btn-slide-leave-to {
-  opacity: 0;
-  transform: scale(0.8);
-  /* 目标宽度为0，让它平滑地“缩”回去 */
-  width: 0;
-  padding: 0;
-  margin-left: 0 !important;
-}
-.btn-slide-move {
-  transition: transform 0.3s ease;
+  background-color: var(--popover-bg); /* 深色背景 */
 }
 
-/* 列表项样式 */
+/* 列表项 (仿 Dashboard 风格) */
 .backend-item {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 12px;
-  border-radius: 6px;
+  padding: 10px 12px;
+  border-radius: 8px;
   cursor: pointer;
-  transition: background-color 0.2s;
-  position: relative;
+  transition: all 0.2s;
   margin-bottom: 4px;
+  border: 1px solid transparent;
 }
 .backend-item:hover {
-  background-color: #f5f7fa;
+  background-color: var(--item-hover);
+  transform: translateX(2px);
 }
 .backend-item.is-active {
-  background-color: #ecf5ff;
+  background-color: rgba(64, 158, 255, 0.1); /* 浅蓝底 */
+  border-color: rgba(64, 158, 255, 0.2);
 }
-.backend-info {
-  flex-grow: 1;
-  overflow: hidden;
-}
+
+/* 文本信息 */
 .backend-name {
   font-size: 14px;
   font-weight: 500;
-  color: #303133;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  color: var(--text-main);
 }
 .backend-detail {
   font-size: 12px;
-  color: #909399;
-}
-.backend-item.is-disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-/* 悬浮按钮区域：默认隐藏，Hover时显示 */
-.backend-actions {
-  display: none;
-  align-items: center;
-  gap: 4px;
-}
-.backend-item:hover .backend-actions {
-  display: flex;
-}
-/* 当显示操作按钮时，隐藏选中标记 */
-.backend-item:hover .active-check {
-  display: none;
-}
-.active-check {
-  color: #409eff;
-  font-weight: bold;
+  color: var(--text-sub);
 }
 
+/* 状态点 */
 .status-dot-container {
-  margin-right: 10px;
-  display: flex;
-  align-items: center;
+  margin-right: 12px;
 }
-
 .list-status-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background-color: #dcdfe6; /* 默认灰色 (disconnected) */
-  transition: background-color 0.3s;
+  background-color: var(--text-sub);
+  transition: all 0.3s;
 }
-
 .list-status-dot.ready {
-  background-color: #67c23a; /* 绿色 */
-  box-shadow: 0 0 4px #67c23a;
+  background-color: #67c23a;
+  box-shadow: 0 0 6px rgba(103, 194, 58, 0.5);
 }
-
 .list-status-dot.setting_up {
-  background-color: #e6a23c; /* 黄色 */
+  background-color: #e6a23c;
   animation: blink 1s infinite;
 }
-
 .list-status-dot.failed {
-  background-color: #f56c6c; /* 红色 */
-}
-
-.connected-tag {
-  font-size: 10px;
-  color: #67c23a;
-  margin-left: 4px;
-}
-
-@keyframes blink {
-  0% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.4;
-  }
-  100% {
-    opacity: 1;
-  }
-}
-
-/* 2. 连接/断开按钮 (Connect/Disconnect) 的样式 */
-.connect-toggle-button .el-button {
-  transition: all 0.5s ease; /* 添加过渡效果 */
-  height: 28px;
-  font-size: 14px;
-}
-/* 默认状态 (Success - Green) */
-.connect-toggle-button .el-button--success.is-plain,
-.connect-toggle-button .el-button--success.is-plain:focus {
-  border-color: #67c23a;
-  background-color: #ffffff;
-  color: #67c23a;
-}
-/* 悬停/聚焦状态 (Success - Green): 颜色翻转 */
-.connect-toggle-button .el-button--success.is-plain:hover {
-  background-color: #67c23a;
-  color: #ffffff;
-}
-/* 默认状态 (Danger - Red) */
-.connect-toggle-button .el-button--danger.is-plain,
-.connect-toggle-button .el-button--danger.is-plain:focus {
-  border-color: #f56c6c;
-  background-color: #ffffff;
-  color: #f56c6c;
-}
-/* 悬停/聚焦状态 (Danger - Red): 颜色翻转 */
-.connect-toggle-button .el-button--danger.is-plain:hover {
   background-color: #f56c6c;
-  color: #ffffff;
-}
-.status-indicators {
-  display: flex;
-  align-items: center;
-  gap: 20px;
 }
 
-.status-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+/* 悬浮操作按钮 */
+.backend-actions .el-button.action-icon {
   font-size: 14px;
+  padding: 6px;
+  margin: 0 2px;
+  border-radius: 4px;
 }
 
-.dot {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  margin-right: 5px;
+/* 删除按钮 - 红 */
+.backend-actions .el-button.action-icon.del {
+  color: #f56c6c !important;
+}
+.backend-actions .el-button.action-icon.del:hover {
+  background: rgba(245, 108, 108, 0.1);
 }
 
-.dot.connected {
-  background-color: #ffffff;
+/* 停止按钮 - 橙/红 */
+.backend-actions .el-button.action-icon.stop {
+  color: #e6a23c !important;
 }
-.dot.disconnected {
-  background-color: #ffffff;
+.backend-actions .el-button.action-icon.stop:hover {
+  background: rgba(230, 162, 60, 0.1);
 }
-.dot.error {
-  background-color: #ffffff;
+
+/* 编辑按钮 - 蓝 */
+.backend-actions .el-button.action-icon.edit {
+  color: #409eff !important;
+}
+.backend-actions .el-button.action-icon.edit:hover {
+  background: rgba(64, 158, 255, 0.1);
+}
+
+/* 首次连接按钮 - 橙色高亮风格 */
+.add-btn-slide.orange-style {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px;
+  border-radius: 8px;
+
+  /* 默认状态：浅橙色线框 */
+  border: 1px dashed #e6a23c;
+  color: #e6a23c;
+  background: rgba(230, 162, 60, 0.08);
+
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.2s;
+}
+
+/* 悬浮状态：实心亮橙色，白字，无边框，无放大 */
+.add-btn-slide.orange-style:hover {
+  border-color: transparent;
+  background: #ff9900; /* 明亮橙色 */
+  color: white;
+  transform: none;
+  box-shadow: 0 4px 12px rgba(255, 153, 0, 0.3);
 }
 </style>

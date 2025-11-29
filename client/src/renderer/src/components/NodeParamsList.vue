@@ -1,22 +1,24 @@
 <template>
-  <div class="params-list-container">
+  <div class="params-list-container" @click.stop>
     <div class="params-header">
       <span>关联参数文件</span>
-      <el-button link type="primary" size="small" @click="addParam">
+      <el-button link type="primary" size="small" :disabled="disabled" @click.stop="addParam">
         <el-icon><Plus /></el-icon> 添加
       </el-button>
     </div>
 
-    <div v-if="params.length === 0" class="empty-params">无关联文件</div>
+    <div v-if="localParams.length === 0" class="empty-params">无关联文件</div>
 
     <div v-else class="params-items">
-      <div v-for="(param, index) in params" :key="index" class="param-row">
-        <!-- 1. 参数名称 (可编辑) -->
+      <div v-for="(param, index) in localParams" :key="index" class="param-row">
+        <!-- 1. 参数名称 -->
+        <!-- 注意：这里用 @change 而不是 @input，意味着只有失去焦点或回车时才触发保存 -->
         <el-input
           v-model="param.name"
           size="small"
           class="param-name-input"
           :placeholder="`参数${index + 1}`"
+          :disabled="disabled"
           @change="triggerSave"
         />
 
@@ -25,31 +27,31 @@
           size="small"
           class="param-path-btn"
           :title="param.path"
-          @click="$emit('pick-file', param)"
+          :disabled="disabled"
+          @click.stop="handlePickFile(param)"
         >
           {{ getFileName(param.path) || '选择文件' }}
         </el-button>
 
-        <!-- 3. 操作按钮组 -->
+        <!-- 3. 操作按钮 -->
         <div class="param-actions">
-          <!-- 编辑内容 -->
           <el-button
             link
             type="primary"
             size="small"
             :icon="EditPen"
-            :disabled="!param.path"
-            title="编辑文件内容"
-            @click="openEditor(param.path)"
+            :disabled="disabled || !param.path"
+            title="编辑内容"
+            @click.stop="openEditor(param.path)"
           />
-          <!-- 删除条目 -->
           <el-button
             link
             type="danger"
             size="small"
             :icon="Delete"
-            title="移除关联"
-            @click="removeParam(index)"
+            :disabled="disabled"
+            title="移除"
+            @click.stop="removeParam(index)"
           />
         </div>
       </div>
@@ -58,24 +60,35 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { ref, watch, toRaw } from 'vue'
 import { Plus, EditPen, Delete } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 
 const props = defineProps({
   node: { type: Object, required: true },
-  backendId: { type: String, required: true }
+  backendId: { type: String, required: true },
+  disabled: { type: Boolean, default: false }
 })
 
 const emit = defineEmits(['update-node', 'pick-file'])
 
-// 确保 params 是数组
-const params = computed(() => {
-  if (!Array.isArray(props.node.params)) {
-    return []
-  }
-  return props.node.params
-})
+// [核心] 本地草稿数据
+const localParams = ref([])
+
+// 监听 Props 变化同步到本地 (单向数据流：Store -> UI)
+// 只有当 backend 真正更新了数据时，才重置本地草稿
+watch(
+  () => props.node.params,
+  (newVal) => {
+    if (Array.isArray(newVal)) {
+      // 深拷贝，断开引用，防止 v-model 直接修改 Store
+      localParams.value = JSON.parse(JSON.stringify(newVal))
+    } else {
+      localParams.value = []
+    }
+  },
+  { immediate: true, deep: true }
+)
 
 function getFileName(path) {
   if (!path) return ''
@@ -84,39 +97,47 @@ function getFileName(path) {
 
 // --- 动作逻辑 ---
 
+// 1. 添加
 function addParam() {
-  const newParams = [...params.value]
-  newParams.push({
-    name: '', // 留空则显示 placeholder
-    path: ''
-  })
-  updateParent(newParams)
+  localParams.value.push({ name: '', path: '' })
 }
 
+// 2. 删除
 function removeParam(index) {
-  const newParams = [...params.value]
-  newParams.splice(index, 1)
-  updateParent(newParams)
+  localParams.value.splice(index, 1)
+  triggerSave()
 }
 
+// 3. 触发保存：将本地草稿发送给父组件
 function triggerSave() {
-  // 这里的 triggerSave 主要是为了响应 input 的 change
-  // 实际上 v-model 修改的是 props.node 内部对象的引用（Vue 响应式特性）
-  // 但我们需要通知 Dashboard 显式调用 Store 的 save
-  updateParent(params.value)
-}
+  // 检查是否有“半成品”条目
+  // 只要有一个条目的 name 或 path 为空，就视为“编辑中”，不进行保存
+  const hasIncompleteParam = localParams.value.some((p) => !p.name || !p.path)
 
-// 通知父组件更新并持久化
-function updateParent(newParams) {
-  // 构造更新后的节点对象
+  if (hasIncompleteParam) {
+    // 处于草稿状态，只更新本地 UI，不通知 Store，防止被后端清洗掉
+    console.log('当前有未完成的参数填写，暂不保存')
+    return
+  }
+
+  // 只有当所有条目都有效时，才发送给后端
   const updatedNode = {
     ...props.node,
-    params: newParams
+    params: toRaw(localParams.value)
   }
   emit('update-node', updatedNode)
 }
 
-// 打开编辑器 (直接调用 IPC)
+// 4. 选择文件：这是最复杂的交互
+// 因为文件选择器在父组件，我们需要把“当前操作的对象”和“保存回调”一起传出去
+function handlePickFile(param) {
+  emit('pick-file', {
+    paramObject: param, // 传递引用，父组件修改这个对象的 path
+    onSuccess: () => triggerSave() // 提供一个回调，父组件选完文件后调用它来触发保存
+  })
+}
+
+// 打开编辑器
 async function openEditor(path) {
   if (!path) return
   const fileName = getFileName(path)
@@ -125,7 +146,7 @@ async function openEditor(path) {
       name: fileName,
       path: path,
       backendId: props.backendId,
-      backendLabel: props.backendId // 或者传 IP
+      backendLabel: props.backendId
     })
   } catch (e) {
     ElMessage.error('打开编辑器失败: ' + e.message)

@@ -1,342 +1,417 @@
 <!-- src/renderer/src/components/Dashboard.vue -->
 <template>
-  <el-container class="dashboard">
-    <!-- 节点控制部分 -->
-    <el-aside class="node-list-panel">
-      <div
-        v-for="node in nodes"
-        :key="node.id || node.name"
-        class="node-wrapper"
-        @mouseenter="node.showEdit = true"
-        @mouseleave="node.showEdit = false"
-      >
-        <el-card
-          class="node-card"
-          :class="{ 'is-editing': editingNodeId === node.id }"
-          @click="toggleExpand(node)"
-        >
-          <template #header>
-            <div class="card-header">
-              <div class="header-row">
-                <el-tag size="small" :type="statusType(node.status)" />
+  <div class="dashboard">
+    <!-- [新增] 左侧列容器 -->
+    <div class="layout-col left-col">
+      <!-- 节点控制部分 -->
+      <div class="glass-panel node-list-panel">
+        <div class="panel-watermark">
+          <el-icon><Operation /></el-icon>
+          <span>节点列表</span>
+        </div>
+        <div style="position: relative; z-index: 2">
+          <div
+            v-for="node in nodes"
+            :key="node.id || node.name"
+            class="node-wrapper"
+            @mouseenter="node.showEdit = true"
+            @mouseleave="node.showEdit = false"
+          >
+            <el-card
+              class="node-card"
+              :class="{
+                'is-editing': editingNodeId === node.id,
+                ['status-' + node.status]: true
+              }"
+              @click="toggleExpand(node)"
+            >
+              <template #header>
+                <div class="card-header">
+                  <div class="header-row">
+                    <el-tag size="small" :type="statusType(node.status)" />
+                  </div>
+                  <div class="header-row">
+                    <!-- 编辑模式的标题输入框 -->
+                    <el-input
+                      v-if="editingNodeId === node.id"
+                      v-model="form.name"
+                      placeholder="Display Name"
+                      size="small"
+                      class="name-input"
+                      @click.stop
+                    />
+                    <!-- 显示模式的标题 -->
+                    <span v-else class="node-name">{{ node.name }}</span>
+                  </div>
+                  <el-icon
+                    class="expand-arrow"
+                    :class="{ 'is-active': expandedNodeIds.has(node.id) }"
+                  >
+                    <ArrowRight />
+                  </el-icon>
+                </div>
+              </template>
+
+              <!-- 卡片内容部分 -->
+              <div class="card-body-content">
+                <!-- 编辑模式 -->
+                <div v-if="editingNodeId === node.id" class="launch-edit-row">
+                  <el-button class="launch-path-button" @click.stop="openFileBrowser('launch')">
+                    {{ getDisplayPath(form.args) || '选择启动文件' }}
+                  </el-button>
+                  <!-- 编辑 Launch 内容按钮 -->
+                  <el-tooltip content="编辑 Launch 文件" placement="top">
+                    <el-button
+                      :icon="EditPen"
+                      type="primary"
+                      plain
+                      class="launch-content-edit-btn"
+                      :disabled="!getDisplayPath(form.args)"
+                      @click.stop="openLaunchEditor"
+                    />
+                  </el-tooltip>
+                </div>
+                <!-- 显示模式 -->
+                <p v-else class="launch-path">{{ getDisplayPath(node.args) }}</p>
               </div>
-              <div class="header-row">
-                <!-- 编辑模式的标题输入框 -->
-                <el-input
-                  v-if="editingNodeId === node.id"
-                  v-model="form.name"
-                  placeholder="Display Name"
-                  size="small"
-                  class="name-input"
+
+              <template #footer>
+                <div class="card-footer">
+                  <!-- 编辑模式: 显示 Save/Cancel 按钮 -->
+                  <div v-if="editingNodeId === node.id" class="footer-edit-actions">
+                    <el-button type="primary" size="small" round @click.stop="saveNode"
+                      >保存</el-button
+                    >
+                    <el-button size="small" round @click.stop="cancelEditing">取消</el-button>
+                  </div>
+
+                  <!-- 显示模式: 显示 启动/停止 和 编辑按钮 -->
+                  <div v-else class="footer-display-actions">
+                    <!-- 删除图标（和编辑图标同样式，因此使用一个class） -->
+                    <el-button
+                      v-show="node.showEdit"
+                      class="delete-icon-btn"
+                      :icon="Delete"
+                      type="danger"
+                      circle
+                      link
+                      :disabled="!isCurrentBackendReady || node.status !== 'stopped'"
+                      @click.stop="deleteNode(node)"
+                    />
+                    <!-- 编辑图标 -->
+                    <el-button
+                      v-show="node.showEdit"
+                      class="edit-icon-btn"
+                      :icon="Edit"
+                      :disabled="!isCurrentBackendReady || node.status !== 'stopped'"
+                      type="primary"
+                      circle
+                      link
+                      @click.stop="startEditing(node)"
+                    />
+                    <el-button
+                      class="start-stop-btn"
+                      :type="
+                        node.status === 'starting'
+                          ? 'primary'
+                          : node.status === 'stopping'
+                            ? 'danger'
+                            : node.status === 'running'
+                              ? 'danger'
+                              : 'primary'
+                      "
+                      :loading="node.status === 'starting' || node.status === 'stopping'"
+                      :disabled="
+                        node.status === 'starting' ||
+                        node.status === 'stopping' ||
+                        !isCurrentBackendReady
+                      "
+                      round
+                      @click.stop="toggleNode(node)"
+                    >
+                      {{
+                        node.status === 'starting'
+                          ? '启动'
+                          : node.status === 'stopping'
+                            ? '停止'
+                            : node.status === 'running'
+                              ? '停止'
+                              : '启动'
+                      }}
+                    </el-button>
+                  </div>
+                </div>
+              </template>
+            </el-card>
+
+            <!-- 2. 参数列表面板 (独立于 Card) -->
+            <el-collapse-transition>
+              <div
+                v-show="expandedNodeIds.has(node.id) && editingNodeId !== node.id"
+                class="params-drawer"
+              >
+                <NodeParamsList
+                  :node="node"
+                  :backend-id="props.currentBackendId"
+                  :disabled="!isCurrentBackendReady"
+                  @update-node="handleNodeUpdate"
+                  @pick-file="(param) => openFileBrowser('param', param)"
                   @click.stop
                 />
-                <!-- 显示模式的标题 -->
-                <span v-else class="node-name">{{ node.name }}</span>
               </div>
-              <el-icon class="expand-arrow" :class="{ 'is-active': node.isExpanded }">
-                <ArrowRight />
-              </el-icon>
-            </div>
-          </template>
+            </el-collapse-transition>
+          </div>
 
-          <!-- 卡片内容部分 -->
-          <div class="card-body-content">
-            <!-- 编辑模式 -->
-            <div v-if="editingNodeId === node.id" class="launch-edit-row">
-              <el-button class="launch-path-button" @click.stop="openFileBrowser('launch')">
-                {{ getDisplayPath(form.args) || '选择启动文件' }}
+          <!-- “新增节点”卡片 -->
+          <el-card v-if="editingNodeId === '__new__'" class="node-card is-editing">
+            <template #header>
+              <div class="card-header">
+                <div class="header-row">
+                  <el-tag size="small" type="info" />
+                </div>
+                <div class="header-row">
+                  <el-input
+                    v-model="form.name"
+                    placeholder="节点名称"
+                    size="small"
+                    class="name-input"
+                  />
+                </div>
+              </div>
+            </template>
+            <div class="card-body-content">
+              <el-button class="launch-path-button" @click="openFileBrowser('launch')">
+                {{ getDisplayPath(form.args) || '选择launch文件' }}
               </el-button>
-              <!-- 编辑 Launch 内容按钮 -->
-              <el-tooltip content="编辑 Launch 文件" placement="top">
-                <el-button
-                  :icon="EditPen"
-                  type="primary"
-                  plain
-                  class="launch-content-edit-btn"
-                  :disabled="!getDisplayPath(form.args)"
-                  @click.stop="openLaunchEditor"
-                />
-              </el-tooltip>
             </div>
-            <!-- 显示模式 -->
-            <p v-else class="launch-path">{{ getDisplayPath(node.args) }}</p>
-          </div>
-
-          <template #footer>
-            <div class="card-footer">
-              <!-- 编辑模式: 显示 Save/Cancel 按钮 -->
-              <div v-if="editingNodeId === node.id" class="footer-edit-actions">
-                <el-button type="primary" size="small" round @click.stop="saveNode">保存</el-button>
-                <el-button size="small" round @click.stop="cancelEditing">取消</el-button>
+            <template #footer>
+              <div class="card-footer">
+                <div class="footer-edit-actions">
+                  <el-button type="primary" size="small" @click.stop="saveNode">添加</el-button>
+                  <el-button size="small" @click.stop="cancelEditing">取消</el-button>
+                </div>
               </div>
-
-              <!-- 显示模式: 显示 启动/停止 和 编辑按钮 -->
-              <div v-else class="footer-display-actions">
-                <!-- 删除图标（和编辑图标同样式，因此使用一个class） -->
-                <el-button
-                  v-show="node.showEdit"
-                  class="delete-icon-btn"
-                  :icon="Delete"
-                  type="danger"
-                  circle
-                  link
-                  :disabled="!isCurrentBackendReady || node.status !== 'stopped'"
-                  @click.stop="deleteNode(node)"
-                />
-                <!-- 编辑图标 -->
-                <el-button
-                  v-show="node.showEdit"
-                  class="edit-icon-btn"
-                  :icon="Edit"
-                  :disabled="!isCurrentBackendReady || node.status !== 'stopped'"
-                  type="primary"
-                  circle
-                  link
-                  @click.stop="startEditing(node)"
-                />
-                <el-button
-                  class="start-stop-btn"
-                  :type="
-                    node.status === 'starting'
-                      ? 'primary'
-                      : node.status === 'stopping'
-                        ? 'danger'
-                        : node.status === 'running'
-                          ? 'danger'
-                          : 'primary'
-                  "
-                  :loading="node.status === 'starting' || node.status === 'stopping'"
-                  :disabled="
-                    node.status === 'starting' ||
-                    node.status === 'stopping' ||
-                    !isCurrentBackendReady
-                  "
-                  round
-                  @click.stop="toggleNode(node)"
-                >
-                  {{
-                    node.status === 'starting'
-                      ? '启动'
-                      : node.status === 'stopping'
-                        ? '停止'
-                        : node.status === 'running'
-                          ? '停止'
-                          : '启动'
-                  }}
-                </el-button>
-              </div>
-            </div>
-          </template>
-        </el-card>
-
-        <!-- 2. 参数列表面板 (独立于 Card) -->
-        <el-collapse-transition>
-          <div v-show="node.isExpanded && editingNodeId !== node.id" class="params-drawer">
-            <NodeParamsList
-              :node="node"
-              :backend-id="props.currentBackendId"
-              @update-node="handleNodeUpdate"
-              @pick-file="(param) => openFileBrowser('param', param)"
-              @click.stop
-            />
-          </div>
-        </el-collapse-transition>
-      </div>
-
-      <!-- “新增节点”卡片 -->
-      <el-card v-if="editingNodeId === '__new__'" class="node-card is-editing">
-        <template #header>
-          <div class="card-header">
-            <div class="header-row">
-              <el-tag size="small" type="info" />
-            </div>
-            <div class="header-row">
-              <el-input
-                v-model="form.name"
-                placeholder="节点名称"
-                size="small"
-                class="name-input"
-              />
-            </div>
-          </div>
-        </template>
-        <div class="card-body-content">
-          <el-button class="launch-path-button" @click="openFileBrowser('launch')">
-            {{ getDisplayPath(form.args) || '选择launch文件' }}
-          </el-button>
-        </div>
-        <template #footer>
-          <div class="card-footer">
-            <div class="footer-edit-actions">
-              <el-button type="primary" size="small" @click.stop="saveNode">添加</el-button>
-              <el-button size="small" @click.stop="cancelEditing">取消</el-button>
-            </div>
-          </div>
-        </template>
-      </el-card>
-      <!-- “添加新节点”的占位符按钮 -->
-      <el-card
-        v-else
-        class="node-card add-new-card"
-        :class="{ 'is-disabled': !isCurrentBackendReady }"
-        @click="startAdding"
-      >
-        <span
-          :style="{
-            fontSize: '2.5vh',
-            color: '#409EFF',
-            marginLeft: '0.5vw'
-          }"
-          >+ 添加新节点</span
-        >
-      </el-card>
-    </el-aside>
-    <!-- 右侧：功能区 -->
-    <el-main class="function-panel">
-      <div class="auto-start-panel">
-        <div class="panel-header">
-          <h2>一键启动序列</h2>
-          <el-button
-            type="primary"
-            link
-            :icon="CirclePlus"
-            :disabled="!isCurrentBackendReady"
-            @click="openSeqDialog(null)"
+            </template>
+          </el-card>
+          <!-- “添加新节点”的占位符按钮 -->
+          <el-card
+            v-else
+            class="node-card add-new-card"
+            :class="{ 'is-disabled': !isCurrentBackendReady }"
+            @click="startAdding"
           >
-            新建序列
-          </el-button>
+            <span
+              :style="{
+                fontSize: '18px',
+                marginLeft: '8px'
+              }"
+              >+ 添加新节点</span
+            >
+          </el-card>
+        </div>
+      </div>
+    </div>
+    <!-- 右侧列容器 -->
+    <div class="layout-col right-col">
+      <!-- 启动序列面板 -->
+      <div class="glass-panel auto-start-panel">
+        <!-- [新增] 背景水印标签 -->
+        <div class="panel-watermark">
+          <el-icon><VideoPlay /></el-icon>
+          <span>启动序列</span>
         </div>
 
-        <el-scrollbar height="calc(100% - 40px)">
+        <!-- [修改] 滚动区域 -->
+        <el-scrollbar height="calc(100% - 40px)" view-style="padding: 10px 5px 5px 5px;">
+          <!-- 空状态提示 -->
           <div v-if="sequences.length === 0" class="empty-hint">暂无序列</div>
 
-          <div v-for="seq in sequences" :key="seq.id" class="seq-item">
-            <div class="seq-info">
-              <div class="seq-name">{{ seq.name }}</div>
-              <div class="seq-desc">{{ seq.steps.length }} 个步骤</div>
+          <!-- [修改] 序列列表 - 卡片化 -->
+          <div
+            v-for="seq in sequences"
+            :key="seq.id"
+            class="seq-card"
+            :class="{ 'is-running': seq._status === 'running' }"
+          >
+            <div class="seq-card-main">
+              <div class="seq-info">
+                <div class="seq-name">{{ seq.name }}</div>
+                <div class="seq-desc">
+                  <el-icon style="vertical-align: middle; margin-right: 2px"
+                    ><d-arrow-right
+                  /></el-icon>
+                  {{ seq.steps.length }} 个步骤
+                </div>
+              </div>
+
+              <!-- 扁平化操作按钮 -->
+              <div class="seq-actions">
+                <!-- 更多操作组 -->
+                <div class="sub-actions">
+                  <el-button
+                    link
+                    class="sub-btn"
+                    :icon="Edit"
+                    :disabled="!isCurrentBackendReady"
+                    @click="openSeqDialog(seq)"
+                  />
+                  <el-button
+                    link
+                    class="sub-btn delete-btn"
+                    :icon="Delete"
+                    :disabled="!isCurrentBackendReady"
+                    @click="deleteSequence(seq)"
+                  />
+                </div>
+                <!-- 运行/停止按钮 -->
+                <el-button
+                  class="action-btn"
+                  :type="seq._status === 'running' ? 'danger' : 'success'"
+                  :class="seq._status === 'running' ? 'is-stop' : 'is-play'"
+                  circle
+                  :icon="seq._status === 'running' ? VideoPause : VideoPlay"
+                  :loading="seq._status === 'running' && false"
+                  :disabled="!isCurrentBackendReady"
+                  @click="toggleSequence(seq)"
+                />
+              </div>
             </div>
-            <div class="seq-actions">
-              <el-button
-                circle
-                size="small"
-                :type="seq._status === 'running' ? 'danger' : 'success'"
-                :icon="seq._status === 'running' ? VideoPause : VideoPlay"
-                :loading="seq._status === 'running'"
-                :disabled="!isCurrentBackendReady"
-                @click="toggleSequence(seq)"
-              />
-              <el-button circle size="small" :icon="Edit" @click="openSeqDialog(seq)" />
-              <el-button
-                circle
-                size="small"
-                :icon="Delete"
-                type="danger"
-                plain
-                @click="deleteSequence(seq)"
-              />
-            </div>
+
+            <!-- 进度条装饰 (可选，仅运行时显示) -->
+            <div v-if="seq._status === 'running'" class="running-indicator"></div>
+          </div>
+
+          <div
+            class="seq-card add-new-seq-card"
+            :class="{ 'is-disabled': !isCurrentBackendReady }"
+            @click="isCurrentBackendReady && openSeqDialog(null)"
+          >
+            <el-icon><CirclePlus /></el-icon>
+            <span>新建序列</span>
           </div>
         </el-scrollbar>
       </div>
 
-      <div class="rosbag-panel">
-        <div class="panel-header">
-          <h2>ROSbag 录制</h2>
-          <el-tag v-if="isRecording" type="danger" effect="dark" class="recording-tag">
-            <span class="dot-blink">●</span> REC
-          </el-tag>
+      <div class="glass-panel rosbag-panel">
+        <!-- [修改] 水印：将位置留给 CSS 控制，移至右上角 -->
+        <div class="panel-watermark top-right-watermark">
+          <el-icon><VideoCamera /></el-icon>
+          <span>Bag录制</span>
         </div>
 
-        <!-- [修复 Bug 2] 移除 el-form 上的 disabled 属性 -->
-        <el-form label-position="top" size="small">
-          <el-row :gutter="10">
-            <el-col :span="16">
-              <el-form-item label="保存路径">
-                <!-- [修改] 只有在录制时禁用输入框 -->
-                <el-input
-                  v-model="bagForm.path"
-                  readonly
-                  :disabled="isRecording"
-                  @click="!isRecording && openFileBrowser('bag-path')"
-                >
-                  <template #append>
-                    <el-button :disabled="isRecording" @click="openFileBrowser('bag-path')"
-                      >选择</el-button
-                    >
-                  </template>
-                </el-input>
-              </el-form-item>
-            </el-col>
-            <el-col :span="8">
-              <el-form-item label="文件名前缀">
+        <!-- 内容区域：允许内部滚动，防止顶出按钮 -->
+        <div class="rosbag-content">
+          <el-form label-position="left" label-width="70px" size="default">
+            <!-- [修改] 第一行：缩短宽度的路径选择 -->
+            <el-form-item label="存储路径" class="compact-form-item short-input-item">
+              <el-input
+                v-model="bagForm.path"
+                readonly
+                :disabled="isRecording"
+                placeholder="点击选择保存路径"
+                class="clickable-input"
+                @click="!isRecording && openFileBrowser('bag-path')"
+              >
+                <!-- 只有前置图标，没有 append 按钮了 -->
+                <template #prefix
+                  ><el-icon><Folder /></el-icon
+                ></template>
+              </el-input>
+            </el-form-item>
+
+            <!-- 第二行：前缀 & 分割 -->
+            <div class="form-row">
+              <el-form-item label="文件前缀" class="compact-form-item item-half">
                 <el-input v-model="bagForm.name" placeholder="record" :disabled="isRecording" />
               </el-form-item>
-            </el-col>
-          </el-row>
 
-          <el-form-item label="话题选择 (留空则录制所有)">
-            <el-select
-              v-model="bagForm.selectedTopics"
-              multiple
-              collapse-tags
-              placeholder="All Topics (-a)"
-              style="width: 100%"
-              filterable
-              :disabled="isRecording"
-            >
-              <el-option
-                v-for="t in availableTopics"
-                :key="t.topic"
-                :label="t.topic"
-                :value="t.topic"
+              <el-form-item label="自动分割" class="compact-form-item item-half">
+                <div class="split-controls">
+                  <el-switch
+                    v-model="bagForm.split"
+                    inline-prompt
+                    active-text="ON"
+                    inactive-text="OFF"
+                    :disabled="isRecording"
+                  />
+                  <el-input-number
+                    v-if="bagForm.split"
+                    v-model="bagForm.size"
+                    :min="100"
+                    :step="100"
+                    :disabled="isRecording"
+                    controls-position="right"
+                    style="width: 80px; margin-left: 10px"
+                    placeholder="MB"
+                  />
+                </div>
+              </el-form-item>
+            </div>
+
+            <!-- 第三行：话题选择 -->
+            <el-form-item label="录制话题" class="compact-form-item">
+              <el-select
+                v-model="bagForm.selectedTopics"
+                multiple
+                collapse-tags
+                collapse-tags-tooltip
+                placeholder="默认录制所有 (-a)"
+                style="width: 100%"
+                filterable
+                :disabled="isRecording"
               >
-                <span style="float: left">{{ t.topic }}</span>
-                <span style="float: right; color: #8492a6; font-size: 12px">{{
-                  t.schemaName
-                }}</span>
-              </el-option>
-            </el-select>
-          </el-form-item>
+                <el-option
+                  v-for="t in availableTopics"
+                  :key="t.topic"
+                  :label="t.topic"
+                  :value="t.topic"
+                >
+                  <span style="float: left">{{ t.topic }}</span>
+                  <span style="float: right; color: #8492a6; font-size: 12px">{{
+                    t.schemaName
+                  }}</span>
+                </el-option>
+              </el-select>
+            </el-form-item>
+          </el-form>
+        </div>
 
-          <el-row :gutter="10">
-            <el-col :span="8">
-              <el-form-item label="自动分割">
-                <el-switch v-model="bagForm.split" :disabled="isRecording" />
-              </el-form-item>
-            </el-col>
-            <el-col v-if="bagForm.split" :span="16">
-              <el-form-item label="分割大小 (MB)">
-                <el-input-number
-                  v-model="bagForm.size"
-                  :min="100"
-                  :step="100"
-                  :disabled="isRecording"
-                />
-              </el-form-item>
-            </el-col>
-          </el-row>
+        <!-- 底部按钮组：固定在底部，flex-shrink 0 -->
+        <div class="rosbag-actions">
+          <!-- [修改] 回放按钮：支持状态切换 -->
+          <el-button
+            class="play-bag-btn"
+            :class="{ 'is-playing': isPlaying }"
+            :type="isPlaying ? 'warning' : 'success'"
+            :disabled="isRecording || !isCurrentBackendReady"
+            @click="playRosbag"
+          >
+            <el-icon style="margin-right: 6px; font-size: 1.2em">
+              <VideoPause v-if="isPlaying" />
+              <VideoPlay v-else />
+            </el-icon>
+            {{ isPlaying ? '停止回放' : '回放记录' }}
+          </el-button>
 
-          <!-- [修复 Bug 1 & 2] 按钮状态逻辑 -->
+          <!-- [修改] 录制按钮 -->
           <el-button
             class="record-btn"
+            :class="{ 'is-recording': isRecording }"
             :type="isRecording ? 'danger' : 'primary'"
-            :icon="isRecording ? VideoPause : VideoPlay"
             :loading="false"
             :disabled="!isCurrentBackendReady || (!isRecording && !isRosServiceReady)"
             @click="toggleRecording"
           >
-            <!-- 
-              disabled 逻辑解释:
-              1. 后端未连接 -> 禁用
-              2. 或者 (没在录制 且 ROS服务没好) -> 禁用 (防止未启动服务就开始)
-              3. 如果正在录制 (isRecording=true)，则允许点击 (因为要停止)
-            -->
-            {{ isRecording ? '停止录制' : isRosServiceReady ? '开始录制' : 'ROS 服务未就绪' }}
+            <el-icon style="margin-right: 6px; font-size: 1.2em">
+              <VideoPause v-if="isRecording" />
+              <Headset v-else />
+            </el-icon>
+            {{ isRecording ? '停止录制' : '开始录制' }}
           </el-button>
-        </el-form>
+        </div>
       </div>
-    </el-main>
-  </el-container>
+    </div>
+  </div>
   <el-dialog
     v-model="fileBrowserContext.visible"
     class="file-browser-dialog"
@@ -445,11 +520,16 @@ import {
   EditPen,
   VideoPlay,
   VideoPause,
+  VideoCamera,
   Timer,
   CirclePlus,
   Remove,
   Plus,
-  ArrowRight
+  ArrowRight,
+  DArrowRight,
+  Folder,
+  Headset,
+  Operation
 } from '@element-plus/icons-vue'
 // #endregion
 
@@ -466,6 +546,7 @@ const nodes = computed(() => {
   const client = robotStore.clients[props.currentBackendId]
   return client ? client.nodes : []
 })
+const expandedNodeIds = ref(new Set())
 
 // UI 状态
 const fileBrowserContext = reactive({
@@ -474,7 +555,8 @@ const fileBrowserContext = reactive({
   allowedExtensions: [],
   mode: 'launch', // 业务逻辑标识: 'launch' | 'bag-path'
   targetType: 'file', // 组件行为标识: 'file' | 'path'
-  targetData: null // 存储临时的引用对象，例如 param 对象
+  targetData: null, // 存储临时的引用对象，例如 param 对象
+  callback: null
 })
 const editingNodeId = ref(null) // 使用 ID 判断编辑状态，新增用 '__new__'
 
@@ -524,6 +606,8 @@ async function toggleNode(node) {
 
 // 开始添加
 function startAdding() {
+  if (!props.isCurrentBackendReady) return
+
   editingNodeId.value = '__new__'
   form.id = ''
   form.name = ''
@@ -568,13 +652,23 @@ async function saveNode() {
     return
   }
 
+  let currentParams = []
+  if (form.id) {
+    const existingNode = nodes.value.find((n) => n.id === form.id)
+    if (existingNode && existingNode.params) {
+      // 深拷贝，防止引用问题
+      currentParams = JSON.parse(JSON.stringify(existingNode.params))
+    }
+  }
+
   // 构造数据
   const nodeData = {
     id: form.id || `node-${Date.now()}`, // 如果是新节点，生成临时 ID
     name: form.name,
     cmd: form.cmd,
     args: [pathStr], // 简单处理：目前只支持单个路径参数
-    description: ''
+    description: '',
+    params: currentParams
   }
 
   try {
@@ -609,9 +703,13 @@ async function deleteNode(node) {
 
 // 切换展开状态
 function toggleExpand(node) {
-  // 如果正在编辑节点本身(改名/换launch)，不响应展开，避免逻辑冲突
   if (editingNodeId.value === node.id) return
-  node.isExpanded = !node.isExpanded
+  const id = node.id
+  if (expandedNodeIds.value.has(id)) {
+    expandedNodeIds.value.delete(id)
+  } else {
+    expandedNodeIds.value.add(id)
+  }
 }
 
 // --- [新增] 序列操作 ---
@@ -705,6 +803,7 @@ function openFileBrowser(mode, data = null) {
   // 1. 设置基础上下文
   fileBrowserContext.mode = mode
   fileBrowserContext.targetData = data
+  fileBrowserContext.callback = null
 
   let currentPathStr = ''
 
@@ -720,7 +819,10 @@ function openFileBrowser(mode, data = null) {
     case 'param':
       fileBrowserContext.targetType = 'file'
       fileBrowserContext.allowedExtensions = [] // 不限制，或者是 .yaml
-      currentPathStr = data ? data.path : ''
+      // data 结构: { paramObject: {...}, onSuccess: fn }
+      fileBrowserContext.targetData = data.paramObject // 存入真实的参数对象引用
+      fileBrowserContext.callback = data.onSuccess // 存入回调
+      currentPathStr = data.paramObject.path || '' // 获取当前路径
       break
 
     case 'bag-path': // [新增] 录制保存路径
@@ -767,10 +869,8 @@ function handleFileSelected(filePath) {
       const param = fileBrowserContext.targetData
       if (param) {
         param.path = filePath
-        // 尝试找到父节点并触发自动保存 (根据你的业务逻辑)
-        const parentNode = nodes.value.find((n) => n.params && n.params.includes(param))
-        if (parentNode && typeof handleNodeUpdate === 'function') {
-          handleNodeUpdate(parentNode)
+        if (fileBrowserContext.callback) {
+          fileBrowserContext.callback()
         }
       }
       break
@@ -908,6 +1008,20 @@ async function toggleRecording() {
   }
 }
 
+// 回放状态 (用于控制按钮样式)
+const isPlaying = ref(false)
+
+// 回放函数：模拟开关逻辑
+const playRosbag = () => {
+  if (isPlaying.value) {
+    isPlaying.value = false
+    // ElMessage.info('停止回放')
+  } else {
+    isPlaying.value = true
+    ElMessage.success('开始回放 (模拟)')
+  }
+}
+
 // #region 6. UI Helpers
 const statusType = (status) => {
   const map = {
@@ -937,34 +1051,196 @@ watch(
     }
   }
 )
+watch(
+  () => props.currentBackendId,
+  (newId, oldId) => {
+    if (newId !== oldId) {
+      expandedNodeIds.value.clear()
+    }
+  }
+)
 </script>
 
 <style scoped>
 /* ============================================
-   1. 全局布局 (Global Layout)
+   0. 主题变量定义 (Updated for Full Dark Mode Support)
    ============================================ */
 .dashboard {
+  --bg-color: #f6f8fa;
+  --text-primary: #303133;
+  --text-secondary: #909399;
+  --divider-color: #e4e7ed;
+
+  /* 玻璃卡片统一风格 */
+  --panel-bg-color: rgba(255, 255, 255, 0.75); /* 稍微降低不透明度，增强通透感 */
+  --panel-border-color: rgba(255, 255, 255, 0.8);
+  --panel-radius: 20px;
+  --panel-shadow: 0 8px 32px rgba(0, 0, 0, 0.05); /* 柔和的弥散阴影 */
+
+  /* 左侧内部卡片颜色 */
+  --card-inner-bg: #ffffff;
+  --card-border-gradient: linear-gradient(135deg, #409eff, #8cc5ff, #ecf5ff);
+  --card-shadow: 0 4px 12px rgba(64, 158, 255, 0.12);
+  --card-hover-scale: scale(1.005);
+  --add-card-text: #409eff;
+  --add-card-disabled-bg: #f5f7fa;
+
+  /* 布局 */
   height: 100%;
-  padding: 0;
+  padding: 12px; /* 全局外边距 */
+  gap: 12px; /* 左右列间距 */
   display: flex;
-  flex-grow: 1;
   flex-direction: row;
+  background-color: var(--bg-color);
+  box-sizing: border-box;
+  transition: background-color 0.3s;
+}
+
+/* --- 深色模式适配 (当父级 html 或 body 有 .dark 类时生效) --- */
+:global(html.dark) .dashboard {
+  --bg-color: #141414;
+  --text-primary: #e5eaf3;
+  --text-secondary: #a3a6ad;
+  --divider-color: #4c4d4f;
+  --panel-bg-color: rgba(30, 30, 30, 0.75);
+  --panel-border-color: rgba(255, 255, 255, 0.1);
+  --panel-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  --card-inner-bg: #1d1e1f;
+  --card-border-gradient: linear-gradient(135deg, #337ecc, #1d3d5e, #1d1e1f);
+  --card-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+  --add-card-text: #337ecc;
+  --add-card-disabled-bg: #2b2b2b;
 }
 
 /* ============================================
-   2. 左侧：节点控制面板 (Left Aside: Node List)
+   0.5 水印标签样式 (New)
+   ============================================ */
+.panel-watermark {
+  position: absolute;
+  top: auto;
+  bottom: 10px;
+  right: 15px;
+  font-family: 'Segoe UI', Impact, sans-serif;
+  font-weight: 900;
+  font-size: 20px;
+  letter-spacing: 2px;
+  color: var(--text-secondary);
+  opacity: 0.25;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  z-index: 0; /* 在最底层 */
+  pointer-events: none; /* 不挡鼠标点击 */
+  user-select: none;
+}
+/* 图标稍微大一点 */
+.panel-watermark .el-icon {
+  font-size: 18px;
+}
+/* 专门针对 Rosbag 面板的右上角水印 */
+.top-right-watermark {
+  top: 10px; /* 顶部距离 */
+  bottom: auto; /* 取消底部定位 */
+  right: 15px; /* 右侧距离 */
+}
+
+/* ============================================
+   1. 布局列 (Layout Columns)
+   ============================================ */
+.layout-col {
+  display: flex;
+  flex-direction: column;
+  gap: 12px; /* 垂直方向间距 (针对右侧两块) */
+  min-width: 0; /* 防止Flex子项溢出 */
+}
+
+.left-col {
+  width: 55%; /* 或者 flex: 1 */
+}
+
+.right-col {
+  flex: 1;
+}
+
+/* ============================================
+   2. 统一玻璃面板 (The Glass Panel)
+   ============================================ */
+.glass-panel {
+  background: var(--panel-bg-color);
+  backdrop-filter: blur(16px); /* 增强磨砂感 */
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--panel-border-color);
+  border-radius: var(--panel-radius);
+  box-shadow: var(--panel-shadow);
+  padding: 15px;
+  box-sizing: border-box;
+  transition: all 0.3s ease;
+  position: relative;
+  overflow: hidden; /* 默认隐藏，有滚动需求单独覆盖 */
+  will-change: transform, backdrop-filter;
+}
+
+/* 悬浮微交互：光影流转 */
+.glass-panel:hover {
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.08);
+  border-color: rgba(255, 255, 255, 1);
+}
+:global(html.dark) .glass-panel:hover {
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  border-color: rgba(255, 255, 255, 0.25);
+}
+
+/* ============================================
+   3. 面板特定样式
    ============================================ */
 
-/* --- 2.1 容器与列表项 --- */
+/* --- 3.1 左侧：节点控制面板 --- */
 .node-list-panel {
-  padding: 1% 1% 1% 1%;
-  border: 2px dashed #e4e7ed;
-  width: 50%;
   height: 100%;
+  /* 滚动条 */
+  overflow: hidden !important;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+/* 悬浮动效：增加阴影深度，提亮边框 */
+.node-list-panel:hover {
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.08);
+  border-color: rgba(255, 255, 255, 0.9);
+}
+
+/* 深色模式下的悬浮微调 */
+:global(html.dark) .node-list-panel:hover {
+  border-color: rgba(255, 255, 255, 0.2);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.5);
+}
+
+.node-list-panel > div[style*='position: relative'] {
+  padding: 15px;
+  height: 100%;
+  overflow-y: auto; /* 滚动条移到这里 */
+  box-sizing: border-box;
+
+  /* 隐藏默认滚动条，使用自定义样式 */
+  scrollbar-width: thin;
+}
+
+/* 自定义滚动条样式 (适配 Chrome/Safari) */
+.node-list-panel > div[style*='position: relative']::-webkit-scrollbar {
+  width: 6px;
+}
+.node-list-panel > div[style*='position: relative']::-webkit-scrollbar-thumb {
+  background-color: rgba(144, 147, 153, 0.3);
+  border-radius: 4px;
+}
+.node-list-panel > div[style*='position: relative']::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 .node-wrapper {
-  margin-bottom: 15px;
+  margin-bottom: 12px;
   display: flex;
   flex-direction: column;
 }
@@ -974,26 +1250,33 @@ watch(
   margin-top: -5px;
 }
 
-/* --- 2.2 节点卡片基础样式 (Card Basic) --- */
+/* --- 节点卡片基础样式 (Card Basic) --- */
 .node-card {
   display: flex;
   align-items: center;
-  border: rgba(144, 147, 153, 1);
+  border: rgba(144, 147, 153, 1); /* 原代码保留，虽然通常被 background 覆盖 */
   border-radius: 0px 40px 40px 0px;
   height: 60px;
+  /* [修改] 核心背景逻辑：利用双层背景实现渐变边框 */
   background-image:
-    linear-gradient(var(--el-bg-color), var(--el-bg-color)),
-    linear-gradient(135deg, #409eff, #8cc5ff, #ecf5ff);
+    linear-gradient(var(--card-inner-bg), var(--card-inner-bg)),
+    /* 上层：内容背景 */ var(--card-border-gradient); /* 下层：边框渐变色 */
   background-origin: border-box;
   background-clip: padding-box, border-box;
-  box-shadow: 0 2px 4px rgba(64, 158, 255, 0.15);
+  /* [修改] 阴影变量化 */
+  box-shadow: var(--card-shadow);
   transition: all 0.3s ease-out;
+  padding-bottom: 0px;
   z-index: 2;
+  cursor: pointer;
+  will-change: transform, backdrop-filter;
+}
+.node-card.is-editing {
+  cursor: default;
 }
 
 .node-card:hover {
-  transform: scale(1.005);
-  margin-bottom: 0;
+  transform: var(--card-hover-scale);
 }
 
 .node-card.has-params-open {
@@ -1005,30 +1288,12 @@ watch(
 
 .add-new-card.is-disabled {
   cursor: not-allowed;
-  background-color: #f5f7fa;
-  border-color: #e4e7ed;
+  /* [修改] 禁用状态背景 */
+  background-color: var(--add-card-disabled-bg);
+  border-color: var(--node-list-border);
 }
 
-.clickable-card {
-  cursor: pointer;
-}
-
-.clickable-card.is-editing {
-  cursor: default;
-}
-
-.expand-arrow {
-  margin-right: 8px;
-  color: #909399;
-  transition: transform 0.3s;
-  font-size: 12px;
-}
-
-.expand-arrow.is-active {
-  transform: rotate(90deg);
-}
-
-/* --- 2.3 卡片头部 (Card Header) --- */
+/* --- 卡片头部 (Card Header) --- */
 /* 头部容器 */
 .node-list-panel :deep(.el-card__header) {
   padding: 0px;
@@ -1038,9 +1303,10 @@ watch(
   height: 80%;
   width: 25%;
   flex-shrink: 0;
-  border-right: 1px solid #e4e7ed;
+  /* [修改] 分割线颜色 */
+  border-right: 1px solid var(--divider-color);
   border-bottom: none;
-  transition: none;
+  transition: border-color 0.3s;
 }
 
 /* 头部内容布局 */
@@ -1062,31 +1328,32 @@ watch(
 
 /* 节点名称文本 */
 .node-list-panel .el-card .header-row .node-name {
-  font-size: 20px;
+  font-size: 2.5vh;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  /* [修改] 文字颜色 */
+  color: var(--text-primary);
 }
 
 /* 节点名称输入框 (编辑模式) */
 .node-list-panel .el-card .header-row .el-input {
+  height: 3vh;
   width: 90%;
-  font-size: 20px;
+  font-size: 2.5vh;
 }
 .node-list-panel .el-card .header-row .name-input :deep(.el-input__wrapper) {
   box-shadow: none !important;
   background-color: transparent;
   padding: 0 !important;
 }
-.node-list-panel .el-card .header-row .name-input :deep(.el-input__wrapper:hover),
-.node-list-panel .el-card .header-row .name-input :deep(.el-input__wrapper.is-focus) {
-  box-shadow: none !important;
-}
 .node-list-panel .el-card .header-row .name-input :deep(.el-input__inner) {
   border: none !important;
   padding: 0 !important;
   height: auto;
   line-height: 1.5;
+  /* [修改] 输入框文字颜色 */
+  color: var(--text-primary);
 }
 
 /* 状态标签 (Tags) */
@@ -1099,7 +1366,7 @@ watch(
   margin-right: 4px;
   transition: all 0.2s ease;
 }
-/* Tag 颜色定义 */
+/* Tag 颜色定义 (保持原样，或改为变量，此处保持原样因为颜色比较鲜艳，深浅模式通用) */
 .node-list-panel .el-card .card-header:deep(.el-tag--success) {
   --el-tag-bg-color: rgb(41, 194, 66);
 }
@@ -1112,8 +1379,18 @@ watch(
 .node-list-panel .el-card .card-header:deep(.el-tag--info) {
   --el-tag-bg-color: rgb(173, 177, 182);
 }
+.expand-arrow {
+  margin-right: 8px;
+  color: #909399;
+  transition: transform 0.3s;
+  font-size: 12px;
+}
+/* 旋转动画 */
+.expand-arrow.is-active {
+  transform: rotate(90deg);
+}
 
-/* --- 2.4 卡片内容主体 (Card Body) --- */
+/* --- 卡片内容主体 (Card Body) --- */
 .node-list-panel .el-card :deep(.el-card__body) {
   font-size: 2vh;
   flex-grow: 1;
@@ -1123,7 +1400,8 @@ watch(
 }
 
 .card-body-content {
-  color: rgb(173, 177, 182);
+  /* [修改] 内容文字颜色 */
+  color: var(--text-secondary);
   width: 100%;
   height: 100%;
   display: flex;
@@ -1144,6 +1422,8 @@ watch(
   overflow: hidden;
   text-overflow: ellipsis;
   word-break: break-all;
+  /* [新增] 按钮文字颜色继承 */
+  color: inherit;
 }
 .launch-edit-row {
   display: flex;
@@ -1159,7 +1439,7 @@ watch(
   padding: 0;
 }
 
-/* --- 2.5 卡片底部操作区 (Card Footer) --- */
+/* --- 卡片底部操作区 (Card Footer) --- */
 .node-list-panel .el-card :deep(.el-card__footer) {
   width: auto;
   padding-right: 15px;
@@ -1173,20 +1453,46 @@ watch(
 }
 
 /* 图标按钮 (编辑/删除) */
-.node-list-panel .el-card .card-footer .edit-icon-btn,
-.node-list-panel .el-card .card-footer .delete-icon-btn {
-  padding: 0px;
-  margin-right: 0px;
-  height: auto;
-  width: auto;
-  border: none;
+.node-list-panel .edit-icon-btn,
+.node-list-panel .delete-icon-btn,
+.sub-btn {
+  transition: all 0.2s;
+  border-radius: 8px; /* 稍微方一点的圆角 */
+  padding: 5px; /* 增加点击热区 */
+  margin: 0 2px;
 }
-.node-list-panel .el-card .card-footer .edit-icon-btn :deep(.el-icon) {
-  font-size: 1.2em;
+
+/* 正常状态下：透明背景，颜色保持原样 */
+.node-list-panel .edit-icon-btn,
+.sub-btn {
+  color: var(--text-secondary);
 }
-.node-list-panel .el-card .card-footer .delete-icon-btn :deep(.el-icon) {
-  font-size: 1.2em;
-  margin-bottom: 0.15em;
+.node-list-panel .delete-icon-btn,
+.sub-btn.delete-btn {
+  color: #f56c6c;
+  opacity: 0.8;
+}
+
+/* Hover 状态：加背景，变色 */
+.node-list-panel .edit-icon-btn:not(:disabled):hover,
+.sub-btn:not(.delete-btn):not(:disabled):hover {
+  background-color: rgba(64, 158, 255, 0.1); /* 浅蓝底 */
+  color: #409eff;
+}
+
+.node-list-panel .delete-icon-btn:not(:disabled):hover,
+.sub-btn.delete-btn:not(:disabled):hover {
+  background-color: rgba(245, 108, 108, 0.1); /* 浅红底 */
+  color: #f56c6c;
+  opacity: 1;
+}
+
+/* 禁用状态 */
+.node-list-panel .edit-icon-btn:disabled,
+.node-list-panel .delete-icon-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+  background: transparent;
 }
 
 /* 按钮组布局 */
@@ -1199,110 +1505,508 @@ watch(
 }
 
 /* 启动/停止/保存按钮样式 */
-.node-list-panel .el-card .card-footer .start-stop-btn .start-stop-btn,
-.node-list-panel .el-card .card-footer .start-stop-btn .el-button--primary,
-.node-list-panel .el-card .card-footer .start-stop-btn .footer-edit-actions .el-button,
-.node-list-panel .el-card .footer-edit-actions .el-button {
+.node-list-panel .start-stop-btn {
+  border: none !important; /* 移除默认边框 */
+  color: white !important; /* 强制白字 */
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.15); /* 基础阴影 */
+  transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+  overflow: hidden;
+  position: relative;
+  will-change: background-color, box-shadow, transform;
+}
+
+/* 状态 A: 准备启动 (Primary - 蓝色渐变) */
+.node-list-panel .start-stop-btn.el-button--primary {
+  background: linear-gradient(135deg, #409eff, #337ecc) !important;
+}
+.node-list-panel .start-stop-btn.el-button--primary:not(:disabled):hover {
+  transform: scale(1.02);
+  box-shadow: 0 5px 12px rgba(64, 158, 255, 0.4);
+  filter: brightness(1.1);
+}
+
+/* 状态 B: 运行中/停止 (Danger - 红色渐变) */
+.node-list-panel .start-stop-btn.el-button--danger {
+  background: linear-gradient(135deg, #f56c6c, #c03636) !important;
+  /* [修改] 节点是持久运行的，停止按钮需要呼吸，提示正在运行中 */
+  animation: btn-breathe-red 2s infinite ease-in-out;
+}
+.node-list-panel .start-stop-btn.el-button--danger:not(:disabled):hover {
+  transform: translateY(-1px);
+  box-shadow: 0 5px 12px rgba(245, 108, 108, 0.4);
+  filter: brightness(1.1);
+}
+
+/* 禁用状态优化 (避免太丑) */
+.node-list-panel .start-stop-btn:disabled {
+  background: #e4e7ed !important;
+  color: #a8abb2 !important;
+  box-shadow: none;
+  transform: none;
+}
+
+/* 添加新节点卡片文字颜色 */
+.add-new-card span {
+  color: var(--add-card-text) !important;
+}
+
+/* --- 3.2 右侧：自动启动面板 (一键启动序列) --- */
+.auto-start-panel {
+  flex: 1;
+  height: auto;
+  display: flex;
+  flex-direction: column;
+  padding: 0 !important; /* 去掉 padding，交给 scrollbar view 处理 */
+}
+
+/* 序列卡片通用样式 */
+.seq-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  background-color: var(--card-inner-bg);
+  /* 使用稍小的圆角，显得更精致 */
+  border-radius: 12px;
+  box-shadow: var(--card-shadow);
+  margin-bottom: 12px;
+  border: 1px solid transparent; /* 预留边框位置 */
+  overflow: hidden;
+  transition: all 0.2s ease-out;
+  cursor: default;
+  transform: scale(1);
+}
+
+/* 悬浮效果：轻微放大 + 边框高亮 */
+.seq-card:hover {
+  transform: scale(1.005);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+  border-color: rgba(64, 158, 255, 0.3);
+}
+
+/* 卡片主要内容布局 */
+.seq-card-main {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 15px;
+}
+
+.seq-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.seq-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.seq-desc {
+  font-size: 12px;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+}
+
+/* 按钮区域 */
+.seq-actions {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  margin-left: auto; /* 核心：把这一组推到最右边 */
+}
+
+/* 主操作按钮 (播放/暂停) */
+/* --- 启动序列：主操作按钮升级 --- */
+.action-btn.is-stop {
+  background: linear-gradient(135deg, #f56c6c, #c03636) !important;
+  animation: none !important;
+}
+.action-btn.is-stop:hover {
+  transform: scale(1.05);
+  filter: brightness(1.1);
+}
+
+/* 次要按钮组 */
+.sub-actions {
+  display: flex;
+  gap: 2px;
+  background: rgba(0, 0, 0, 0.03); /* 浅灰底座 */
   border-radius: 16px;
-  transition: all 0.2s ease;
-  height: 32px;
-  width: 64px;
-  font-size: 100%;
-  margin-left: 10px;
+  padding: 2px 6px;
 }
 
-/* Primary Button 交互 */
-.node-list-panel .el-card .card-footer .start-stop-btn .el-button--primary,
-.node-list-panel .el-card .card-footer .start-stop-btn .el-button--primary:focus {
-  border-color: #409eff;
-  background-color: #409eff;
-  color: #ffffff;
+/* 运行时的底部动画条 */
+.running-indicator {
+  height: 3px;
+  width: 100%;
+  background: linear-gradient(90deg, #67c23a, #95d475);
+  animation: progress-indeterminate 2s infinite linear;
+  background-size: 200% 100%;
 }
-.node-list-panel .el-card .card-footer .start-stop-btn .el-button--primary:hover {
+@keyframes progress-indeterminate {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: -100% 0;
+  }
+}
+
+/* --- 新建序列卡片 (模仿左侧 Add New) --- */
+.add-new-seq-card {
+  justify-content: center; /* 内容居中 */
+  align-items: center; /* 垂直居中 */
+  border: 1px dashed var(--divider-color); /* 虚线框 */
+  background-color: transparent; /* 透明背景 */
+  box-shadow: none; /* 无阴影 */
+  cursor: pointer;
+  padding: 15px;
+  flex-direction: row; /* 横向排列图标和文字 */
+  gap: 8px;
+  color: var(--add-card-text);
+  font-weight: 500;
+  font-size: 15px;
+}
+.add-new-seq-card:hover {
+  border-color: var(--add-card-text);
+  background-color: var(--add-card-disabled-bg);
+  transform: scale(1.01);
+}
+.add-new-seq-card.is-disabled {
+  filter: grayscale(1);
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* 暗色模式适配 */
+:global(html.dark) .sub-actions {
+  background: rgba(255, 255, 255, 0.05);
+}
+:global(html.dark) .action-btn.is-play {
+  background-color: rgba(103, 194, 58, 0.2);
+}
+:global(html.dark) .action-btn.is-stop {
+  background-color: rgba(245, 108, 108, 0.2);
+}
+
+/* --- 3.3 右侧：Rosbag 面板 --- */
+.rosbag-panel {
+  display: flex;
+  flex-direction: column;
+  padding: 15px 15px 15px 15px !important;
+  height: 220px;
+}
+
+/* 内容区域：表单 */
+.rosbag-content {
+  flex: 1; /* 占据所有可用空间 */
+  min-height: 0; /* [核心] 允许 Flex 子项收缩小于内容高度 */
+  overflow-y: auto; /* [核心] 当空间不足时，只有表单部分出现滚动条 */
+  overflow-x: hidden;
+  /* 布局微调 */
+  display: flex;
+  flex-direction: column;
+  justify-content: center; /* 垂直居中 */
+  margin-bottom: 2px; /* 与底部按钮的间距 */
+  /* 隐藏滚动条 (Chrome/Safari) */
+  scrollbar-width: none;
+}
+.rosbag-content::-webkit-scrollbar {
+  display: none;
+}
+
+/* 紧凑表单样式 */
+.compact-form-item {
+  margin-bottom: 18px; /* 减少行间距 */
+}
+.compact-form-item :deep(.el-form-item__label) {
+  font-weight: 500;
+  color: var(--text-secondary);
+  padding-right: 12px;
+}
+
+/* 两列布局行 */
+.form-row {
+  display: flex;
+  gap: 20px;
+  align-items: center;
+}
+.item-half {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 分割控制组 */
+.split-controls {
+  display: flex;
+  align-items: center;
+  width: 100%;
+}
+.unit-text {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-left: 6px;
+}
+
+/* 输入框样式调整 */
+.short-input-item {
+  width: 65%; /* [核心] 限制宽度，给右上角水印留出 35% 的空间 */
+  transition: width 0.3s;
+}
+
+/* 让只读输入框看起来像按钮 */
+.clickable-input :deep(.el-input__wrapper) {
+  cursor: pointer;
+  background-color: rgba(255, 255, 255, 0.5); /* 默认半透明 */
+  box-shadow: 0 0 0 1px #dcdfe6 inset;
+}
+.clickable-input :deep(.el-input__inner) {
+  cursor: pointer;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+.clickable-input:hover :deep(.el-input__wrapper) {
+  background-color: #fff;
+  box-shadow: 0 0 0 1px var(--add-card-text) inset;
+}
+
+/* 紧凑表单项 */
+.compact-form-item {
+  margin-bottom: 12px; /* 进一步减小间距，防止太容易触发滚动 */
+}
+.compact-form-item :deep(.el-form-item__label) {
+  font-weight: 500;
+  color: var(--text-secondary);
+  padding-right: 12px;
+  line-height: 32px; /* 垂直对齐 */
+}
+
+/* 底部按钮区域 - 永远固定在底部 */
+.rosbag-actions {
+  flex-shrink: 0; /* [核心] 禁止被压缩，确保永远可见 */
+  display: flex;
+  gap: 2px;
+  padding-top: 2px; /* 稍微留点呼吸空间 */
+}
+
+/* 按钮通用风格 (Base Style) */
+.play-bag-btn,
+.record-btn {
+  height: 44px;
+  border-radius: 22px;
+  font-weight: bold;
+  font-size: 15px;
+  letter-spacing: 1px;
+  border: none;
+  transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+  position: relative;
+  overflow: hidden;
+  color: white; /* 统一白字 */
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1); /* 基础阴影 */
+}
+
+/* 基础 Hover (通用) */
+.play-bag-btn:not(.is-playing):hover,
+.record-btn:not(.is-recording):hover {
   transform: scale(1.02);
-  box-shadow: 1px 1px 1px rgba(0, 0, 0, 0.3);
+  filter: brightness(1.1); /* 简单提亮，不破坏渐变 */
 }
-
-/* Danger Button 交互 */
-.node-list-panel .el-card .card-footer .start-stop-btn .el-button--danger,
-.node-list-panel .el-card .card-footer .start-stop-btn .el-button--danger:focus {
-  border-color: #f56c6c;
-  background-color: #f56c6c;
-  color: #ffffff;
-}
-.node-list-panel .el-card .card-footer .start-stop-btn .el-button--danger:hover {
+.play-bag-btn:not(.is-playing):active,
+.record-btn:not(.is-recording):active {
   transform: scale(1.02);
-  box-shadow: 1px 1px 1px rgba(0, 0, 0, 0.3);
 }
 
-/* ============================================
-   3. 右侧：功能面板 (Right Main: Function Panel)
-   ============================================ */
-
-/* --- 3.1 容器 --- */
-.el-main.function-panel {
-  padding: 0;
-  width: auto;
-  height: 100%;
-  margin-left: 0.5%;
+/* 1. 回放按钮 (Play Button) */
+.play-bag-btn {
+  flex: 1;
 }
 
-/* --- 3.2 顶部通用标题栏 --- */
+/* 状态 A: 待机 (绿色渐变) */
+.play-bag-btn:not(.is-playing) {
+  background: linear-gradient(135deg, #67c23a, #429e18); /* Element Success Green */
+  box-shadow: 0 4px 10px rgba(103, 194, 58, 0.3);
+}
+
+/* 状态 B: 播放中 (橙色呼吸) */
+.play-bag-btn.is-playing {
+  background-color: #e6a23c; /* Element Warning Orange */
+  animation: breathe-orange 2s infinite ease-in-out;
+}
+/* Hover 时保持呼吸，仅微调颜色暗示可交互 */
+.play-bag-btn.is-playing:hover {
+  background-color: #cf9236;
+}
+
+/* 2. 录制按钮 (Record Button) */
+.record-btn {
+  flex: 1.5; /* 稍微宽一点，作为主操作 */
+}
+
+/* 状态 A: 待机 (蓝色渐变) */
+.record-btn:not(.is-recording) {
+  background: linear-gradient(135deg, #409eff, #337ecc); /* Element Primary Blue */
+  box-shadow: 0 4px 10px rgba(64, 158, 255, 0.3);
+}
+
+/* 状态 B: 录制中 (红色呼吸) */
+.record-btn.is-recording {
+  background-color: #f56c6c; /* Element Danger Red */
+  animation: breathe-red 2s infinite ease-in-out;
+}
+/* Hover 时保持呼吸，仅微调颜色暗示可交互 */
+.record-btn.is-recording:hover {
+  background-color: #c95050;
+}
+
+/* 动画定义 (Animations) */
+/* 红色呼吸 (录制) */
+@keyframes breathe-red {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(245, 108, 108, 0.7);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(245, 108, 108, 0.25); /* 扩散更柔和 */
+  }
+}
+
+/* 橙色呼吸 (回放) */
+@keyframes breathe-orange {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(230, 162, 60, 0.7);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(230, 162, 60, 0.25);
+  }
+}
+
+/* --- 3.4 右侧通用元素 --- */
 .panel-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 15px;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.03);
 }
 .panel-header h2 {
   margin: 0;
   font-size: 16px;
-  color: #303133;
+  font-weight: 600;
+  color: var(--text-primary);
 }
 
-/* --- 3.3 一键启动序列 (Auto Start) [Scoped 部分] --- */
-.el-main.function-panel .auto-start-panel {
-  width: auto;
-  height: 60%;
-  border: 2px dashed #e4e7ed;
-  padding: 1% 1% 1% 1%;
-  margin-bottom: 0.5%;
+/* 序列列表卡片 */
+.seq-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  border-radius: 12px;
+  background-color: rgba(255, 255, 255, 0.4);
+  border: 1px solid transparent;
+  transition: all 0.2s;
+}
+.seq-item:hover {
+  background-color: #fff;
+  transform: translateX(2px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+}
+.seq-name {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--text-primary);
+}
+.seq-desc {
+  font-size: 12px;
+  color: var(--text-secondary);
 }
 
-/* --- 3.4 Rosbag 录制 (Rosbag Panel) --- */
-.el-main.function-panel .rosbag-panel {
-  width: auto;
-  height: auto;
-  flex-grow: 1;
-  border: 2px dashed #e4e7ed;
-  padding: 1% 1% 1% 1%;
+/* 表单控件透明化 */
+.rosbag-panel .el-input__wrapper,
+.rosbag-panel .el-select__wrapper {
+  background-color: rgba(255, 255, 255, 0.5) !important;
+  box-shadow: none !important;
+  border: 1px solid #dcdfe6;
 }
-.rosbag-panel {
-  background: white;
-  padding: 15px;
-  border-radius: 8px;
-  box-shadow: 0 2px 12px 0 rgba(0, 0, 0, 0.05);
-  margin-top: 15px;
+.rosbag-panel .el-input__wrapper:hover,
+.rosbag-panel .el-select__wrapper:hover {
+  background-color: #fff !important;
 }
-.record-btn {
-  width: 100%;
-  margin-top: 10px;
-  height: 40px;
-  font-size: 16px;
+.rosbag-panel .el-input__wrapper.is-focus {
+  background-color: #fff !important;
+  border-color: #409eff;
+  box-shadow: 0 0 0 1px #409eff !important;
 }
-.dot-blink {
-  animation: blink 1s infinite;
-  margin-right: 4px;
+
+/* 1. 运行中 (Running) -> Success Green */
+/* 对应 el-tag success: rgb(103, 194, 58) */
+.node-card.status-running {
+  border-color: transparent; /* 保持无边框，靠阴影 */
+  animation: shadow-flow-green 3s infinite ease-in-out;
 }
-@keyframes blink {
-  0% {
-    opacity: 1;
+
+/* 2. 启动/停止中 (Starting/Stopping) -> Warning Orange */
+/* 对应 el-tag warning: rgb(230, 193, 45) */
+.node-card.status-starting,
+.node-card.status-stopping {
+  animation: shadow-flow-yellow 2s infinite ease-in-out; /* 稍微快一点，表示忙碌 */
+}
+
+/* 3. 错误/崩溃 (Error/Crashed) -> Danger Red */
+/* 对应 el-tag error: rgb(245, 108, 108) */
+.node-card.status-crashed,
+.node-card.status-error {
+  animation: shadow-flow-red 1.5s infinite ease-in-out; /* 急促的呼吸 */
+}
+
+/* 4. 已停止 (Stopped) -> 保持默认蓝色渐变阴影 */
+.node-card.status-stopped {
+  /* 保持默认的 var(--card-shadow) 即可，或者稍微淡一点 */
+  box-shadow: var(--card-shadow);
+}
+
+/* --- 定义流光动画 (Shadow Animations) --- */
+
+/* 1. 绿色流光 (Running): 尺寸基本不变，通过透明度变化体现能量感 */
+@keyframes shadow-flow-green {
+  0%,
+  100% {
+    /* 基准状态：与静止态大小一致 (12px blur)，颜色为绿 */
+    box-shadow: 0 4px 12px rgba(103, 194, 58, 0.2);
   }
   50% {
-    opacity: 0;
+    /* 活跃状态：稍微扩散一点点 (16px blur)，亮度增加 */
+    box-shadow: 0 6px 16px rgba(103, 194, 58, 0.4);
   }
+}
+
+/* 2. 黄色流光 (Busy) */
+@keyframes shadow-flow-yellow {
+  0%,
   100% {
-    opacity: 1;
+    box-shadow: 0 4px 12px rgba(230, 193, 45, 0.2);
+  }
+  50% {
+    box-shadow: 0 6px 16px rgba(230, 193, 45, 0.4);
+  }
+}
+
+/* 3. 红色流光 (Error) */
+@keyframes shadow-flow-red {
+  0%,
+  100% {
+    box-shadow: 0 4px 12px rgba(245, 108, 108, 0.2);
+  }
+  50% {
+    box-shadow: 0 6px 16px rgba(245, 108, 108, 0.4);
   }
 }
 </style>
@@ -1344,88 +2048,109 @@ watch(
 }
 
 /* ============================================
-   5. 全局功能样式 (可能在 scoped 中有冲突)
+   5. 全局功能样式 (右侧面板内部组件)
    ============================================ */
 
-/* --- 5.1 一键启动序列 (Auto Start) [Global 部分] --- */
-/* 注意：这里与 scoped 中的 .auto-start-panel 定义共存，目前保持原样 */
-.auto-start-panel {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  background: #fff;
-  border-radius: 8px;
-  padding: 15px;
-  margin-bottom: 20px;
-  box-shadow: 0 2px 12px 0 rgba(0, 0, 0, 0.05);
-}
+/* --- 5.1 序列列表 (Sequence List) --- */
+/* 注意：移除原有的 .auto-start-panel 全局样式，避免冲突 */
 
-/* 注意：Global panel-header 可能会影响全局 */
-.panel-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 10px;
-}
-.panel-header h2 {
-  margin: 0;
-  font-size: 16px;
-  color: #303133;
-}
-
-/* 序列列表项 */
+/* 序列项 - 改为卡片式 */
 .seq-item {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 10px;
-  border-bottom: 1px solid #f0f2f5;
-  transition: background 0.2s;
+  padding: 12px 15px;
+  margin-bottom: 8px; /* 项之间的间距 */
+  border-radius: 12px;
+  background-color: rgba(255, 255, 255, 0.5); /* 列表项微白背景 */
+  border: 1px solid transparent;
+  transition: all 0.2s ease;
 }
+
+/* 最后一个元素不再特殊处理边框，因为现在是卡片分离的 */
 .seq-item:last-child {
-  border-bottom: none;
+  border-bottom: 1px solid transparent;
+  margin-bottom: 0;
 }
+
+/* 悬停效果 */
 .seq-item:hover {
-  background-color: #fafafa;
+  background-color: white;
+  transform: translateX(4px); /* 悬停时微微右移 */
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+  border-color: rgba(64, 158, 255, 0.2);
+}
+
+/* 选中或运行中的效果 (可选，如果你在 JS 里加了 class) */
+.seq-item.is-active {
+  background-color: #ecf5ff;
+  border-color: #d9ecff;
+}
+
+.seq-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .seq-name {
-  font-size: 14px;
-  font-weight: 500;
-  color: #606266;
+  font-size: 15px;
+  font-weight: 600;
+  color: #303133;
 }
+
 .seq-desc {
   font-size: 12px;
   color: #909399;
 }
 
-.empty-hint {
-  text-align: center;
-  color: #909399;
-  padding: 20px;
-  font-size: 13px;
+/* 操作按钮组微调 */
+.seq-actions {
+  opacity: 0.8;
+  transition: opacity 0.2s;
+}
+.seq-item:hover .seq-actions {
+  opacity: 1;
 }
 
-/* --- 5.2 时间轴编辑器 (Timeline Editor) --- */
-.timeline-editor {
-  max-height: 300px;
-  overflow-y: auto;
-  padding-top: 10px;
-}
-.step-content {
+.empty-hint {
+  height: 100%;
   display: flex;
   align-items: center;
-  gap: 10px;
+  justify-content: center;
+  color: #c0c4cc;
+  font-size: 14px;
+  border: 2px dashed #e4e7ed;
+  border-radius: 12px;
+  margin: 10px 0;
 }
-.delay-input {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 13px;
+
+/* --- 5.2 Form 控件美化 (针对右侧面板内的输入框) --- */
+/* 让输入框背景半透明，融入玻璃背景 */
+.function-panel .el-input__wrapper,
+.function-panel .el-select__wrapper {
+  background-color: rgba(255, 255, 255, 0.6) !important;
+  box-shadow: none !important;
+  border: 1px solid #dcdfe6;
+  transition: all 0.2s;
+}
+
+.function-panel .el-input__wrapper:hover,
+.function-panel .el-select__wrapper:hover {
+  background-color: #fff !important;
+  border-color: #c0c4cc;
+}
+
+.function-panel .el-input__wrapper.is-focus,
+.function-panel .el-select__wrapper.is-focused {
+  background-color: #fff !important;
+  border-color: #409eff;
+  box-shadow: 0 0 0 1px #409eff !important;
+}
+
+/* 标签样式微调 */
+.function-panel .el-form-item__label {
+  font-weight: 500;
   color: #606266;
-}
-/* 去掉 timeline 最后一个节点的 tail */
-:deep(.el-timeline-item:last-child .el-timeline-item__tail) {
-  display: none;
 }
 </style>

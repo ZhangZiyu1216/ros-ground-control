@@ -26,12 +26,7 @@ function createWindow() {
       webSecurity: false
     },
     frame: false,
-    titleBarStyle: 'hidden',
-    titleBarOverlay: {
-      color: '#2c3e50',
-      symbolColor: '#ffffff',
-      height: 50
-    }
+    titleBarStyle: 'hiddenInset'
   })
   // 强制禁用代理，解决局域网 WebSocket 连不上被误走代理的问题
   win.webContents.session.setProxy({ mode: 'direct' }).then(() => {
@@ -55,6 +50,16 @@ function createWindow() {
     win.loadFile(join(__dirname, '../renderer/index.html'))
   }
 }
+
+ipcMain.on('window-min', () => win.minimize())
+ipcMain.on('window-max', () => {
+  if (win.isMaximized()) {
+    win.unmaximize()
+  } else {
+    win.maximize()
+  }
+})
+ipcMain.on('window-close', () => win.close())
 
 app.whenReady().then(() => {
   electronApp.setAppUserModelId('com.ros-desktop.client')

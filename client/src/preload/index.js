@@ -51,6 +51,11 @@ const api = {
 if (process.contextIsolated) {
   contextBridge.exposeInMainWorld('electron', electronAPI)
   contextBridge.exposeInMainWorld('api', api)
+  contextBridge.exposeInMainWorld('electronWindow', {
+    minimize: () => ipcRenderer.send('window-min'),
+    toggleMaximize: () => ipcRenderer.send('window-max'),
+    close: () => ipcRenderer.send('window-close')
+  })
 } else {
   window.Electron = electronAPI
   window.api = api

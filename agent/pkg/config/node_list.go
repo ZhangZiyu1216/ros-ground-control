@@ -9,13 +9,20 @@ import (
 	"time"
 )
 
+// ParamFile 定义单个参数文件的引用
+type ParamFile struct {
+	Name string `json:"name"` // 显示名称，例如 "雷达内参"
+	Path string `json:"path"` // 文件绝对路径，例如 "/home/user/lidar.yaml"
+}
+
 // QuickNode 定义“常用节点”的数据结构
 type QuickNode struct {
-	ID          string   `json:"id"`          // 唯一标识 (UUID 或 时间戳)
-	Name        string   `json:"name"`        // 显示名称 (如 "激光雷达")
-	Cmd         string   `json:"cmd"`         // roslaunch / rosrun
-	Args        []string `json:"args"`        // ["my_pkg", "lidar.launch"]
-	Description string   `json:"description"` // 备注
+	ID          string      `json:"id"`          // 唯一标识 (UUID 或 时间戳)
+	Name        string      `json:"name"`        // 显示名称 (如 "激光雷达")
+	Cmd         string      `json:"cmd"`         // roslaunch / rosrun
+	Args        []string    `json:"args"`        // ["my_pkg", "lidar.launch"]
+	Description string      `json:"description"` // 备注
+	Params      []ParamFile `json:"params"`      // 关联的参数文件列表
 }
 
 var (
