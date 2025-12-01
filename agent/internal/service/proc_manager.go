@@ -303,6 +303,38 @@ func (pm *ProcessManager) StopProcess(id string) error {
 	return nil
 }
 
+// SignalProcess 向指定进程发送特定信号 (用于暂停/恢复)
+func (pm *ProcessManager) SignalProcess(id string, sig syscall.Signal) error {
+	val, ok := pm.procs.Load(id)
+	if !ok {
+		return fmt.Errorf("process not found")
+	}
+	proc := val.(*MonitoredProcess)
+
+	proc.mu.Lock()
+	defer proc.mu.Unlock()
+
+	// 1. 外部进程处理
+	if proc.isExternal {
+		p, err := os.FindProcess(proc.externalPID)
+		if err != nil {
+			return err
+		}
+		return p.Signal(sig)
+	}
+
+	// 2. 内部进程处理
+	if proc.cmd != nil && proc.cmd.Process != nil {
+		// 发送给进程组，确保子进程也能收到 (虽然 rosbag play 通常是单进程)
+		// 注意：syscall.Kill 的第一个参数是 pid。
+		// 如果我们使用了 pty，PID == PGID，使用负数可以发给进程组。
+		pid := proc.cmd.Process.Pid
+		return syscall.Kill(-pid, sig)
+	}
+
+	return fmt.Errorf("process not running")
+}
+
 func (pm *ProcessManager) streamOutput(id string, streamName string, reader io.Reader) {
 	scanner := bufio.NewScanner(reader)
 	for scanner.Scan() {

@@ -5,6 +5,8 @@ export function useSshScan() {
   let cleanupListener = null
 
   const start = async () => {
+    if (!window.api || !window.api.startSshScan) return
+
     sshDevices.value = []
 
     if (cleanupListener) {
@@ -21,9 +23,11 @@ export function useSshScan() {
   }
 
   const stop = async () => {
-    await window.api.stopSshScan()
+    if (window.api && window.api.stopSshScan) {
+      await window.api.stopSshScan()
+    }
     if (cleanupListener) {
-      cleanupListener()
+      cleanupListener() // 调用返回的 removeListener 函数
       cleanupListener = null
     }
   }

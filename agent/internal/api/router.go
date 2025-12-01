@@ -28,37 +28,43 @@ func NewRouter() *gin.Engine {
 	{
 		// System 接口
 		apiGroup.GET("/sys/ping", handlePing)
-		apiGroup.GET("/sys/info", handleSysInfo)
-		apiGroup.GET("/sys/config", handleGetConfig)
-		apiGroup.POST("/sys/config", handleUpdateConfig)
-		apiGroup.GET("/sys/interfaces", handleListInterfaces) // 获取网卡列表
-		apiGroup.GET("/sys/pubkey", handleGetPubKey)
 
-		// File System 接口
-		// RegisterFSRoutes 定义在 handler_fs.go 中 (同 package api，直接调用)
-		fsGroup := apiGroup.Group("/fs")
-		RegisterFSRoutes(fsGroup)
+		// --- 2. 受保护接口 (应用 AuthMiddleware) ---
+		// 创建一个子路由组，应用中间件
+		protected := apiGroup.Group("/")
+		protected.Use(AuthMiddleware())
+		{
+			protected.GET("/sys/info", handleSysInfo)
+			protected.GET("/sys/config", handleGetConfig)
+			protected.POST("/sys/config", handleUpdateConfig)
+			protected.GET("/sys/interfaces", handleListInterfaces) // 获取网卡列表
+			protected.GET("/sys/pubkey", handleGetPubKey)
+			// File System 接口
+			// RegisterFSRoutes 定义在 handler_fs.go 中 (同 package api，直接调用)
+			fsGroup := protected.Group("/fs")
+			RegisterFSRoutes(fsGroup)
 
-		// Process 接口
-		// RegisterProcRoutes 定义在 handler_proc.go 中 (同 package api，直接调用)
-		procGroup := apiGroup.Group("/proc")
-		RegisterProcRoutes(procGroup)
+			// Process 接口
+			// RegisterProcRoutes 定义在 handler_proc.go 中 (同 package api，直接调用)
+			procGroup := protected.Group("/proc")
+			RegisterProcRoutes(procGroup)
 
-		// ros 服务接口
-		rosGroup := apiGroup.Group("/ros")
-		RegisterRosRoutes(rosGroup)
+			// ros 服务接口
+			rosGroup := protected.Group("/ros")
+			RegisterRosRoutes(rosGroup)
 
-		// 常用节点配置接口
-		nodeGroup := apiGroup.Group("/nodes")
-		RegisterNodeListRoutes(nodeGroup)
+			// 常用节点配置接口
+			nodeGroup := protected.Group("/nodes")
+			RegisterNodeListRoutes(nodeGroup)
 
-		// 启动序列接口
-		seqGroup := apiGroup.Group("/sequences")
-		RegisterSequenceRoutes(seqGroup)
+			// 启动序列接口
+			seqGroup := protected.Group("/sequences")
+			RegisterSequenceRoutes(seqGroup)
 
-		// ros 包录制接口
-		bagGroup := apiGroup.Group("/bag")
-		RegisterBagRoutes(bagGroup)
+			// ros 包录制接口
+			bagGroup := protected.Group("/bag")
+			RegisterBagRoutes(bagGroup)
+		}
 	}
 
 	return r

@@ -3,6 +3,7 @@ package connect
 import (
 	"log"
 	"net/http"
+	"ros-ground-control/agent/internal/session"
 	"sync"
 	"time"
 
@@ -129,6 +130,8 @@ func (c *Client) readPump() {
 	defer func() {
 		c.hub.unregister <- c
 		c.conn.Close()
+		log.Println("[Session] WebSocket disconnected. Clearing session.")
+		session.ClearSession()
 	}()
 
 	c.conn.SetReadLimit(maxMessageSize)
@@ -188,18 +191,46 @@ func (c *Client) writePump() {
 	}
 }
 
-// HandleWebsocket Gin Handler
+// HandleWebsocket 修改：增加握手拦截和 Token 发送
 func HandleWebsocket(c *gin.Context) {
-	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
-	if err != nil {
-		log.Println(err)
+	// 1. 尝试创建会话 (互斥锁检查)
+	token, ok := session.TryCreateSession()
+	if !ok {
+		log.Println("[Session] Connection rejected: Session locked by another client.")
+		c.JSON(http.StatusConflict, gin.H{"error": "Session locked by another client"})
 		return
 	}
+
+	// 2. 升级连接
+	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+	if err != nil {
+		log.Println("[Session] Upgrade failed:", err)
+		session.ClearSession() // 升级失败也要清理
+		return
+	}
+
+	log.Printf("[Session] New client connected. Token: %s", token)
 
 	client := &Client{hub: GlobalHub, conn: conn, send: make(chan LogMessage, 256)}
 	client.hub.register <- client
 
-	// 启动读写泵
+	// 3. 立即发送 Token 给前端
+	// 构造一个特殊的日志消息，Stream 为 "auth"
+	authMsg := LogMessage{
+		ProcessID: "system",
+		Stream:    "auth",
+		Data:      token,
+	}
+
+	// 这里直接通过 conn 发送，确保这是第一条消息
+	if err := conn.WriteJSON(authMsg); err != nil {
+		log.Println("[Session] Failed to send token:", err)
+		client.conn.Close()
+		session.ClearSession()
+		return
+	}
+
+	// 4. 启动读写泵
 	go client.writePump()
 	go client.readPump()
 }

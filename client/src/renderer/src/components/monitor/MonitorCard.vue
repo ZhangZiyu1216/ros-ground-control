@@ -1,16 +1,19 @@
 <template>
   <div class="monitor-card-container">
+    <!-- Header: 拖拽手柄 -->
     <div class="card-header drag-handle">
-      <div class="header-left">
-        <!-- 1. 选择机器人 -->
+      <div class="header-controls">
+        <!-- 1. 机器人选择 -->
         <el-select
           v-model="localConfig.backendId"
-          placeholder="选择机器人"
+          placeholder="Bot"
           size="small"
-          class="robot-select"
+          class="seamless-select robot-select"
+          :teleported="false"
           @change="handleRobotChange"
           @mousedown.stop
         >
+          <template #prefix><span class="label-prefix">主机</span></template>
           <el-option
             v-for="robot in activeRobots"
             :key="robot.id"
@@ -19,43 +22,54 @@
           />
         </el-select>
 
-        <!-- 2. 选择话题 -->
-        <!-- 增加 :key 强制重渲染 -->
+        <el-divider direction="vertical" />
+
+        <!-- 2. 话题选择 -->
         <el-select
           :key="localConfig.backendId"
           v-model="currentSelectId"
-          placeholder="选择话题"
+          placeholder="Select Topic"
           size="small"
           filterable
-          class="topic-select"
+          class="seamless-select topic-select"
           :disabled="!localConfig.backendId"
+          :teleported="false"
           @change="handleTopicChange"
           @mousedown.stop
         >
+          <template #prefix><span class="label-prefix">话题</span></template>
           <el-option
             v-for="ch in sortedAndFilteredChannels"
             :key="ch.id"
             :label="ch.topic"
             :value="ch.id"
           >
-            <span style="float: left">{{ ch.topic }}</span>
-            <span style="float: right; color: #666; font-size: 10px; margin-left: 10px">{{
-              formatType(ch.schemaName)
-            }}</span>
+            <span class="option-topic">{{ ch.topic }}</span>
+            <span class="option-type">{{ formatType(ch.schemaName) }}</span>
           </el-option>
         </el-select>
-
-        <span v-if="messageRate > 0" class="rate-tag">{{ messageRate }} Hz</span>
       </div>
 
-      <div class="header-right" @mousedown.stop>
-        <el-icon class="close-btn" @click="$emit('remove')"><Close /></el-icon>
+      <div class="header-actions" @mousedown.stop>
+        <el-tag v-if="messageRate > 0" size="small" type="success" effect="dark" class="rate-tag">
+          {{ messageRate }} Hz
+        </el-tag>
+        <div class="close-btn" @click="$emit('remove')">
+          <el-icon><Close /></el-icon>
+        </div>
       </div>
     </div>
 
+    <!-- Body: 内容显示 -->
     <div class="card-body" @mousedown.stop>
-      <el-empty v-if="!localConfig.backendId" description="请选择机器人" :image-size="60" />
-      <el-empty v-else-if="!localConfig.topicName" description="请选择话题" :image-size="60" />
+      <div v-if="!localConfig.backendId" class="placeholder-state">
+        <el-icon class="icon"><Connection /></el-icon>
+        <span>请先选择机器人</span>
+      </div>
+      <div v-else-if="!localConfig.topicName" class="placeholder-state">
+        <el-icon class="icon"><ChatLineSquare /></el-icon>
+        <span>请选择监控话题</span>
+      </div>
 
       <component :is="visualizerComponent" v-else :data="visualizedData" :topic-type="topicType" />
     </div>
@@ -64,7 +78,7 @@
 
 <script setup>
 import { ref, computed, watch, onUnmounted, reactive } from 'vue'
-import { Close } from '@element-plus/icons-vue'
+import { Close, Connection, ChatLineSquare } from '@element-plus/icons-vue'
 import { useRobotStore } from '../../store/robot'
 import { useFoxglove } from '../../composables/useFoxglove'
 import DataVisualizer from './DataVisualizer.vue'
@@ -84,7 +98,6 @@ const localConfig = reactive({
   topicType: props.config.topicType || ''
 })
 
-// 用于绑定 el-select 的中间变量 (ID)
 const currentSelectId = ref(null)
 
 const activeRobots = computed(() => {
@@ -94,39 +107,52 @@ const activeRobots = computed(() => {
   }))
 })
 
-// --- 话题列表数据流 ---
-
-// 1. 获取响应式引用
+// --- 话题列表 ---
 const topicsRef = computed(() => {
   if (!localConfig.backendId) return []
   return getTopicsRef(localConfig.backendId).value
 })
 
-// 2. 排序与过滤
 const sortedAndFilteredChannels = computed(() => {
   const list = topicsRef.value || []
-
-  const filtered = list.filter((ch) => {
-    const isNotRawImage = ch.schemaName !== 'sensor_msgs/Image'
-
-    // 【调试修改】暂时放宽条件
-    // 如果 isAlive 为 undefined (旧逻辑) 或者 true (新逻辑)，都显示
-    // 甚至可以暂时去掉 isAlive 的判断，只看 isNotRawImage
-
-    // 原逻辑：
-    const isAlive = ch.isAlive === true
-    const isSelected = ch.topic === localConfig.topicName
-    return isNotRawImage && (isAlive || isSelected)
-
-    // 新逻辑 (配合 useFoxglove 的乐观策略)：
-    // useFoxglove 保证了如果没有 graph update，isAlive 默认为 true
-    //return isNotRawImage && ch.isAlive !== false
-  })
-
-  return filtered.sort((a, b) => a.topic.localeCompare(b.topic))
+  return list
+    .filter((ch) => {
+      // 1. 过滤掉 Raw Image (性能原因)
+      if (ch.schemaName === 'sensor_msgs/Image') return false
+      // 2. 仅显示“活跃”的话题，或者“当前已选中”的话题
+      // 如果话题死了 (pubCount=0)，ch.isAlive 会是 false，此时应该隐藏，除非它正是用户正在看的话题
+      return ch.isAlive || ch.topic === localConfig.topicName
+    })
+    .sort((a, b) => a.topic.localeCompare(b.topic))
 })
 
-// 3. [关键修复] 监听配置变化，同步 Select 显示 ID
+// --- Watchers for State Sync ---
+
+// 1. 列表变动时，检查当前选中话题是否还存在/活跃
+// 1. 列表变动时，检查当前选中话题是否还存在/活跃
+watch(
+  sortedAndFilteredChannels,
+  (list) => {
+    if (!localConfig.topicName) return
+
+    const match = list.find((ch) => ch.topic === localConfig.topicName)
+    if (match) {
+      if (currentSelectId.value !== match.id) {
+        currentSelectId.value = match.id
+      }
+      // 如果话题从死变活，或者 ID 变了，刷新订阅
+      setupSubscription()
+    } else {
+      // [说明] 进入这里意味着话题既不活跃，也不是当前选中的话题（但这不可能，因为 filter 保留了当前选中）
+      // 唯一的情况是：后端发了 Unadvertise（彻底移除了定义），此时列表中真的没有了
+      // 我们选择清空 select ID 显示，提示用户话题已失效，但保留 config，等待复活
+      currentSelectId.value = null
+    }
+  },
+  { deep: true, immediate: true }
+)
+
+// 2. 监听 Config Name 变化 (来自 Select 选中)
 watch(
   () => localConfig.topicName,
   (newName) => {
@@ -134,97 +160,70 @@ watch(
       currentSelectId.value = null
       return
     }
-    // 尝试在当前列表中找对应的 ID
+    // 仅在手动设置时尝试匹配 ID
     const match = sortedAndFilteredChannels.value.find((ch) => ch.topic === newName)
-    if (match) {
-      currentSelectId.value = match.id
-    } else {
-      // 如果名字有，但列表里没有（说明话题还没出现或已消亡），
-      // 我们保留 Select 显示为空，或者显示 Name（el-select 不支持 value 不在 option 里）
-      // 这里选择置空，等待话题出现
-      currentSelectId.value = null
-    }
-  },
-  { immediate: true }
+    if (match) currentSelectId.value = match.id
+  }
 )
 
-// 4. [关键修复] 监听列表变化，自动匹配或清空
-watch(
-  sortedAndFilteredChannels,
-  (newList) => {
-    // 如果当前选中的话题名字还在，更新 ID (防止重连后 ID 变了)
-    if (localConfig.topicName) {
-      const match = newList.find((ch) => ch.topic === localConfig.topicName)
-      if (match) {
-        currentSelectId.value = match.id
-        // 确保订阅处于激活状态 (如果是重连恢复的情况)
-        setupSubscription()
-      } else {
-        // 话题消失了！
-        // 这种情况下，保持 topicName 不变（等待恢复），但 Select UI 变空
-        currentSelectId.value = null
-      }
-    }
-  },
-  { deep: true }
-)
-
-// --- 数据展示逻辑 ---
-
-const topicType = computed(() => {
-  if (!localConfig.topicName) return ''
-  // 优先用实时的类型，其次用配置的
-  const ch = sortedAndFilteredChannels.value.find((c) => c.topic === localConfig.topicName)
-  return ch?.schemaName || localConfig.topicType || ''
-})
-
+// --- Visualizer ---
 const visualizerComponent = computed(() => {
-  if (topicType.value.toLowerCase().includes('image')) return ImageVisualizer
+  const type = localConfig.topicType || ''
+  if (type.toLowerCase().includes('image') || type.toLowerCase().includes('compressed')) {
+    return ImageVisualizer
+  }
   return DataVisualizer
 })
 
 const formatType = (name) => (name ? name.split('/').pop() : '')
 
-// --- 订阅管理 ---
+// --- Subscription ---
 let cleanupSub = null
 
 function setupSubscription() {
-  // 防抖：如果配置没变且已订阅，跳过 (useFoxglove 内部有计数，重复调用也没事，但为了性能)
-  if (cleanupSub) cleanupSub()
+  // 如果已经在订阅同一个，先不乱动，交给 useFoxglove 内部去处理去重
+  // 但为了安全，如果 backend 或 topic 变了，必须重建
+  if (cleanupSub) {
+    cleanupSub()
+    cleanupSub = null
+  }
 
   if (localConfig.backendId && localConfig.topicName) {
-    cleanupSub = subscribe(localConfig.backendId, localConfig.topicName, localConfig.topicType)
+    cleanupSub = subscribe(localConfig.backendId, localConfig.topicName)
   }
 }
 
+// Data Stream
 const realTimeMessage = computed(() => {
   return getMessage(localConfig.backendId, localConfig.topicName)
 })
 
-// --- 渲染节流 ---
 const visualizedData = ref(null)
-const messageCount = ref(0)
 const messageRate = ref(0)
-const lastRateCheck = ref(Date.now())
-const lastRenderTime = ref(0)
-const RENDER_INTERVAL = 100
+let msgCount = 0
+let lastRateTime = Date.now()
+let lastRenderTime = 0
 
 watch(realTimeMessage, (newMsg) => {
+  if (!newMsg) return
   const now = Date.now()
-  messageCount.value++
-  if (now - lastRateCheck.value > 1000) {
-    messageRate.value = messageCount.value
-    messageCount.value = 0
-    lastRateCheck.value = now
+  msgCount++
+
+  // Hz Calc
+  if (now - lastRateTime > 1000) {
+    messageRate.value = msgCount
+    msgCount = 0
+    lastRateTime = now
   }
-  if (now - lastRenderTime.value > RENDER_INTERVAL || !newMsg) {
+
+  // Throttle Render (10 FPS)
+  if (now - lastRenderTime > 100) {
     visualizedData.value = newMsg
-    lastRenderTime.value = now
+    lastRenderTime = now
   }
 })
 
-// --- 交互处理 ---
-
+// --- Handlers ---
 function handleRobotChange() {
   localConfig.topicName = ''
   localConfig.topicType = ''
@@ -234,29 +233,19 @@ function handleRobotChange() {
 }
 
 function handleTopicChange(newId) {
-  // 用户在下拉框选了 ID，我们需要存的是 Name
+  // 从 ID 反查 Name
   const ch = sortedAndFilteredChannels.value.find((c) => c.id === newId)
   if (ch) {
     localConfig.topicName = ch.topic
     localConfig.topicType = ch.schemaName
-    // setupSubscription 会由 watch(localConfig.topicName) 触发吗？
-    // 不会，因为我们是在这里同步修改的。需要手动触发或等待 watch。
-    // 为了更直接的响应，手动调用：
     setupSubscription()
     updateConfig()
   }
 }
 
 function updateConfig() {
-  emit('update:config', {
-    backendId: localConfig.backendId,
-    topicName: localConfig.topicName,
-    topicType: localConfig.topicType
-  })
+  emit('update:config', { ...localConfig })
 }
-
-// 初始挂载
-if (localConfig.topicName) setupSubscription()
 
 onUnmounted(() => {
   if (cleanupSub) cleanupSub()
@@ -264,61 +253,148 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-/* 保持原有样式 */
 .monitor-card-container {
   width: 100%;
   height: 100%;
-  background: #1e1e1e;
-  border: 1px solid #333;
-  border-radius: 6px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  /* 卡片风格 */
+  background: var(--panel-bg-color);
+  border-radius: 12px;
+  box-shadow: 0 4px 12px var(--panel-shadow);
+  border: 1px solid var(--panel-border-color);
+  transition: all 0.2s;
 }
+
+.monitor-card-container:hover {
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  transform: translateY(-1px);
+}
+
+/* --- Header --- */
 .card-header {
   height: 36px;
-  background: #2d2d2d;
+  /* 渐变底色 */
+  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.02), rgba(0, 0, 0, 0.05));
+  border-bottom: 1px solid rgba(0, 0, 0, 0.05);
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 0 8px;
-  cursor: move;
-  border-bottom: 1px solid #333;
+  cursor: grab;
+  user-select: none;
 }
-.header-left {
+.card-header:active {
+  cursor: grabbing;
+}
+
+:global(html.dark) .card-header {
+  background: #252525;
+  border-bottom-color: #333;
+}
+
+.header-controls {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   flex: 1;
-  min-width: 0;
+  min-width: 0; /* 防止撑破 */
+}
+
+/* 无边框 Select 样式 */
+.seamless-select {
+  --el-input-border-color: transparent;
+  --el-input-hover-border-color: transparent;
+  --el-input-focus-border-color: transparent;
+  --el-fill-color-blank: transparent;
+}
+.seamless-select .label-prefix {
+  font-size: 10px;
+  font-weight: 800;
+  color: #909399;
+  margin-right: 4px;
+}
+/* 调整 Select 内部文字 */
+.seamless-select :deep(.el-input__inner) {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary, #303133);
 }
 .robot-select {
-  width: 110px;
+  width: 120px;
 }
 .topic-select {
   flex: 1;
   min-width: 100px;
 }
-.rate-tag {
-  font-size: 10px;
-  color: #67c23a;
-  background: #222;
-  padding: 2px 4px;
-  border-radius: 2px;
-  white-space: nowrap;
+
+/* 下拉选项样式 */
+.option-topic {
+  font-weight: 500;
+  float: left;
 }
-.close-btn {
-  cursor: pointer;
+.option-type {
+  float: right;
   color: #909399;
+  font-size: 10px;
+  margin-left: 10px;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.rate-tag {
+  font-family: monospace;
+  height: 20px;
+  padding: 0 6px;
+}
+
+.close-btn {
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #909399;
+  cursor: pointer;
+  transition: all 0.2s;
 }
 .close-btn:hover {
+  background-color: rgba(245, 108, 108, 0.1);
   color: #f56c6c;
 }
+
+/* --- Body --- */
 .card-body {
   flex: 1;
   overflow: auto;
-  background: #141414;
   position: relative;
+  /* 确保有背景色，防止透明穿透 */
+  background: var(--bg-color, #f6f8fa);
+}
+:global(html.dark) .card-body {
+  background: #141414;
+}
+
+/* 占位状态 */
+.placeholder-state {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  color: #c0c4cc;
+  font-size: 13px;
+  gap: 10px;
+}
+.placeholder-state .icon {
+  font-size: 24px;
+  opacity: 0.5;
 }
 
 /* 滚动条 */
@@ -327,7 +403,10 @@ onUnmounted(() => {
   height: 6px;
 }
 .card-body::-webkit-scrollbar-thumb {
-  background: #444;
+  background: rgba(0, 0, 0, 0.1);
   border-radius: 3px;
+}
+:global(html.dark) .card-body::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
 }
 </style>

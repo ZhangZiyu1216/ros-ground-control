@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"ros-ground-control/agent/internal/service"
+	"ros-ground-control/agent/internal/session"
 	"sync"
 
 	"github.com/gin-gonic/gin"
@@ -25,6 +26,21 @@ type TermMessage struct {
 }
 
 func handleTerminal(c *gin.Context) {
+	// --- 鉴权逻辑 ---
+
+	// 1. 从 URL Query 参数中获取 Token
+	// 例如: ws://ip:port/ws/terminal?token=uuid-string
+	token := c.Query("token")
+
+	// 2. 校验 Token 是否有效
+	// 这会检查 token 是否不为空，且是否等于当前持有锁的 session token
+	if !session.IsValid(token) {
+		// 如果无效，直接拒绝升级，返回 403 Forbidden
+		c.JSON(http.StatusForbidden, gin.H{"error": "Unauthorized: Invalid token"})
+		return
+	}
+
+	// --- 鉴权通过，继续原有逻辑 ---
 	// 1. 升级 WebSocket
 	ws, err := termUpgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {

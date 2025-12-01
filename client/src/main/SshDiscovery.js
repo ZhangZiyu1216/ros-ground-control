@@ -104,7 +104,6 @@ class SshDiscovery {
     }
   }
 
-  // ... (以下辅助函数保持不变) ...
   getLocalNetworkInfo() {
     const subnets = []
     const localIPs = new Set()

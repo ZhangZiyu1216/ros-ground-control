@@ -2,7 +2,10 @@
 <template>
   <div class="image-container">
     <img v-if="imgSrc" :src="imgSrc" alt="Stream" class="live-image" />
-    <div v-else class="placeholder">等待图像流...</div>
+    <div v-else class="placeholder-wrapper">
+      <div class="loader"></div>
+      <div class="text">等待图像流...</div>
+    </div>
   </div>
 </template>
 
@@ -46,15 +49,38 @@ const imgSrc = computed(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #000;
+  background: #000; /* 图像通常需要黑色背景以保证对比度 */
   overflow: hidden;
+  border-radius: 0 0 8px 8px; /* 底部圆角 */
 }
+
 .live-image {
-  max-width: 100%;
-  max-height: 100%;
-  object-fit: contain;
+  width: 100%;
+  height: 100%;
+  object-fit: contain; /* 保持比例 */
 }
-.placeholder {
-  color: #555;
+
+.placeholder-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  color: #666;
+}
+
+/* 简单的 loading 动画 */
+.loader {
+  width: 20px;
+  height: 20px;
+  border: 2px solid #333;
+  border-top-color: #666;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 </style>

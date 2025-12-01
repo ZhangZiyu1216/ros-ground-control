@@ -26,6 +26,17 @@ const api = {
   editorIsReady: () => ipcRenderer.send('editor-ready-to-open'),
 
   // 编辑器窗口通信
+  // 主窗口调用：广播 Token
+  broadcastToken: (payload) => ipcRenderer.send('sync-token-to-editor', payload),
+  // 主窗口监听：编辑器索要 Token
+  onRequestTokens: (cb) => ipcRenderer.on('main:request-tokens', cb),
+  // 编辑器调用：索要 Token
+  requestTokens: () => ipcRenderer.send('editor-request-tokens'),
+  // 编辑器监听：收到 Token 更新
+  onTokenUpdate: (cb) => ipcRenderer.on('editor:update-token', (_e, val) => cb(val)),
+  // 通用
+  openEditorWindow: () => ipcRenderer.invoke('open-file-editor', null), // 空参数表示仅打开
+
   onEditorOpenFile: (cb) => ipcRenderer.on('editor:open-file', cb),
   onCheckUnsaved: (cb) => ipcRenderer.on('editor-check-unsaved', cb),
   respondClose: (canClose) => ipcRenderer.invoke('editor-close-response', canClose),

@@ -5,37 +5,48 @@ export function useLanScan() {
   let cleanupListener = null
 
   const start = async () => {
+    // 防御性检查
+    if (!window.api || !window.api.startMdnsScan) {
+      console.warn('[LanScan] API not available')
+      return
+    }
+
     discoveredDevices.value = []
+
+    // 清理旧监听器
     if (cleanupListener) {
       cleanupListener()
       cleanupListener = null
     }
 
+    // 注册监听
     cleanupListener = window.api.onMdnsServiceFound((service) => {
-      // 这里的 service 现在是主进程透传过来的完整对象
-      // 通常包含: name, type, host, port, addresses, txt, ip
-
+      // service 结构: { name, type, host, port, addresses, txt, ip }
       const incomingId = service.txt?.id
-      // 为了 UI 显示友好，我们手动构造一个统一的 hostname 字段
-      // 优先显示 TXT 里的 hostname，其次是服务名
-      const displayHostname = service.txt?.hostname || service.name || service.host
+      // 优先显示 TXT 中的 hostname，其次是 host 字段，最后是 name
+      const displayHostname = service.txt?.hostname || service.host || service.name
 
-      // 构造一个 UI 友好的对象
       const deviceItem = {
         ...service,
-        hostname: displayHostname, // 覆盖/新增 hostname 字段供 UI 使用
+        hostname: displayHostname,
         ip: service.ip || service.addresses?.find((a) => a.includes('.'))
       }
 
-      // 去重
-      const exists = discoveredDevices.value.find((d) => {
+      // 仅当有有效 IP 时才处理
+      if (!deviceItem.ip) return
+
+      // 去重逻辑：优先匹配 ID，其次匹配 IP
+      const existsIndex = discoveredDevices.value.findIndex((d) => {
         if (incomingId && d.txt?.id) {
           return d.txt.id === incomingId
         }
         return d.ip === deviceItem.ip
       })
 
-      if (!exists && deviceItem.ip) {
+      if (existsIndex !== -1) {
+        // 更新现有项 (可能 hostname 变了)
+        discoveredDevices.value[existsIndex] = deviceItem
+      } else {
         discoveredDevices.value.push(deviceItem)
       }
     })
@@ -44,7 +55,9 @@ export function useLanScan() {
   }
 
   const stop = async () => {
-    await window.api.stopMdnsScan()
+    if (window.api && window.api.stopMdnsScan) {
+      await window.api.stopMdnsScan()
+    }
     if (cleanupListener) {
       cleanupListener()
       cleanupListener = null

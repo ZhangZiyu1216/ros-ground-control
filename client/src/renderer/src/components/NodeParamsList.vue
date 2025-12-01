@@ -1,56 +1,64 @@
 <template>
   <div class="params-list-container" @click.stop>
+    <!-- 顶部标题栏 -->
     <div class="params-header">
-      <span>关联参数文件</span>
-      <el-button link type="primary" size="small" :disabled="disabled" @click.stop="addParam">
+      <span class="header-title">参数列表</span>
+      <el-button
+        link
+        type="primary"
+        size="small"
+        :disabled="disabled"
+        class="add-param-btn"
+        @click.stop="addParam"
+      >
         <el-icon><Plus /></el-icon> 添加
       </el-button>
     </div>
 
-    <div v-if="localParams.length === 0" class="empty-params">无关联文件</div>
+    <!-- 空状态 -->
+    <div v-if="localParams.length === 0" class="empty-params">
+      <span class="empty-dot"></span> 暂无参数文件
+    </div>
 
+    <!-- 参数列表 -->
     <div v-else class="params-items">
       <div v-for="(param, index) in localParams" :key="index" class="param-row">
-        <!-- 1. 参数名称 -->
-        <!-- 注意：这里用 @change 而不是 @input，意味着只有失去焦点或回车时才触发保存 -->
+        <!-- 1. 参数名称 (透明输入框) -->
         <el-input
           v-model="param.name"
           size="small"
           class="param-name-input"
-          :placeholder="`参数${index + 1}`"
+          :placeholder="`Param ${index + 1}`"
           :disabled="disabled"
           @change="triggerSave"
         />
 
-        <!-- 2. 路径按钮 -->
-        <el-button
-          size="small"
-          class="param-path-btn"
+        <!-- 2. 路径按钮 (文件胶囊) -->
+        <div
+          class="file-capsule"
+          :class="{ 'is-empty': !param.path, 'is-disabled': disabled }"
           :title="param.path"
-          :disabled="disabled"
-          @click.stop="handlePickFile(param)"
+          @click.stop="!disabled && handlePickFile(param)"
         >
-          {{ getFileName(param.path) || '选择文件' }}
-        </el-button>
+          <span class="file-name">{{ getFileName(param.path) || '点击选择文件...' }}</span>
+        </div>
 
-        <!-- 3. 操作按钮 -->
+        <!-- 3. 操作按钮 (悬浮显示) -->
         <div class="param-actions">
           <el-button
             link
-            type="primary"
+            class="action-icon edit"
             size="small"
             :icon="EditPen"
             :disabled="disabled || !param.path"
-            title="编辑内容"
             @click.stop="openEditor(param.path)"
           />
           <el-button
             link
-            type="danger"
+            class="action-icon delete"
             size="small"
             :icon="Delete"
             :disabled="disabled"
-            title="移除"
             @click.stop="removeParam(index)"
           />
         </div>
@@ -131,8 +139,10 @@ function triggerSave() {
 // 4. 选择文件：这是最复杂的交互
 // 因为文件选择器在父组件，我们需要把“当前操作的对象”和“保存回调”一起传出去
 function handlePickFile(param) {
+  const referencePath = props.node.args && props.node.args.length > 0 ? props.node.args[0] : null
   emit('pick-file', {
     paramObject: param, // 传递引用，父组件修改这个对象的 path
+    referencePath: referencePath,
     onSuccess: () => triggerSave() // 提供一个回调，父组件选完文件后调用它来触发保存
   })
 }
@@ -155,54 +165,175 @@ async function openEditor(path) {
 </script>
 
 <style scoped>
+/* ============================================
+   容器样式 (Drawer Tray Style)
+   ============================================ */
 .params-list-container {
-  background-color: #f5f7fa; /* 稍微深一点的背景，区分于 Card */
-  border: 1px solid #e4e7ed;
-  border-top: none; /* 去掉上边框，使其看起来像从 Card 延伸出来的 */
-  border-radius: 0 0 4px 4px; /* 只有底部圆角 */
-  padding: 10px 15px;
-  margin: 0 4px; /* 稍微缩进一点，营造层次感，或者设为 0 与卡片等宽 */
-  box-shadow: 0 2px 4px 0 rgba(0, 0, 0, 0.05);
+  /* 视觉位置调整：稍微缩进，营造层次感 */
+  margin: 0 18px 2px 10px;
+  padding: 15px 15px 15px 15px;
+
+  /* 背景：轻微的半透明底色，比卡片深一点 */
+  background-color: var(--panel-bg-color);
+
+  /* 边框 */
+  border: 1px solid var(--divider-color);
+  border-radius: 0 0 16px 16px; /* 底部圆角 */
+
+  /* 动画过渡 */
+  transition: all 0.3s ease;
 }
 
+/* ============================================
+   Header & Controls
+   ============================================ */
 .params-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  font-size: 12px;
-  color: #909399;
-  margin-bottom: 8px;
+  margin-bottom: 10px;
+  padding-bottom: 5px;
+  border-bottom: 1px dashed var(--divider-color, #e4e7ed); /* 使用 CSS 变量 */
 }
 
-.empty-params {
-  text-align: center;
-  color: #c0c4cc;
-  font-size: 12px;
-  padding: 5px 0;
+.header-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: var(--text-secondary, #909399);
+  text-transform: uppercase; /* 英文大写，更像仪表盘 */
 }
 
+.add-param-btn {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* ============================================
+   列表内容
+   ============================================ */
 .param-row {
   display: flex;
   align-items: center;
-  gap: 5px;
-  margin-bottom: 5px;
+  gap: 8px;
+  margin-bottom: 6px;
+  /* 增加高度稳定性 */
+  height: 28px;
 }
 
+/* 1. 参数名输入框 - 极简风格 */
 .param-name-input {
   width: 80px;
   flex-shrink: 0;
 }
-
-.param-path-btn {
-  flex-grow: 1;
-  justify-content: flex-start;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: #606266;
+/* 穿透修改 Element 输入框样式：去背景、去边框 */
+.param-name-input :deep(.el-input__wrapper) {
+  background-color: transparent !important;
+  box-shadow: none !important;
+  padding: 0 5px !important;
+  transition: all 0.2s;
+}
+/* 聚焦或悬浮时显示下划线 */
+.param-name-input:hover :deep(.el-input__wrapper),
+.param-name-input :deep(.el-input__wrapper.is-focus) {
+  box-shadow: 0 1px 0 0 var(--el-color-primary) !important;
+  border-radius: 0;
+}
+.param-name-input :deep(.el-input__inner) {
+  font-size: 13px;
+  color: var(--text-primary, #606266);
+  font-weight: 500;
+  text-align: left; /* 让文字靠右，靠近文件路径 */
+}
+.add-param-btn {
+  display: flex;
+  align-items: center;
+}
+.add-param-btn :deep(.el-icon) {
+  margin-right: 4px;
 }
 
+/* 2. 文件路径胶囊 (File Capsule) */
+.file-capsule {
+  flex-grow: 1;
+  background-color: rgba(255, 255, 255, 0.6);
+  border: 1px solid transparent;
+  border-radius: 12px;
+  padding: 0 8px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  font-size: 12px;
+  color: var(--text-primary, #606266);
+  cursor: pointer;
+  transition: all 0.2s;
+  overflow: hidden;
+}
+/* 交互效果 */
+.file-capsule:hover:not(.is-disabled) {
+  background-color: #fff;
+  border-color: var(--add-card-text, #409eff);
+  color: var(--add-card-text, #409eff);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.05);
+}
+.file-capsule.is-empty {
+  color: var(--text-secondary, #909399);
+  background-color: rgba(0, 0, 0, 0.03);
+}
+.file-capsule.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+.file-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 深色模式适配 */
+:global(html.dark) .file-capsule {
+  background-color: rgba(255, 255, 255, 0.05);
+}
+:global(html.dark) .file-capsule:hover:not(.is-disabled) {
+  background-color: rgba(255, 255, 255, 0.1);
+}
+
+/* 3. 操作按钮 */
 .param-actions {
   display: flex;
-  flex-shrink: 0;
+  opacity: 0.6; /* 默认半透明，减少干扰 */
+  transition: opacity 0.2s;
+}
+.param-row:hover .param-actions {
+  opacity: 1; /* 鼠标移入行时高亮 */
+}
+
+.action-icon {
+  padding: 4px;
+  margin-left: 2px;
+  height: auto;
+}
+.action-icon.edit:hover {
+  color: var(--el-color-primary);
+}
+.action-icon.delete:hover {
+  color: var(--el-color-danger);
+}
+
+/* 空状态 */
+.empty-params {
+  text-align: center;
+  color: var(--text-secondary, #c0c4cc);
+  font-size: 12px;
+  padding: 5px 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+.empty-dot {
+  width: 4px;
+  height: 4px;
+  background-color: #dcdfe6;
+  border-radius: 50%;
 }
 </style>
