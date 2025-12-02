@@ -1,5 +1,6 @@
 import { app, shell, BrowserWindow, ipcMain } from 'electron'
 import { join } from 'path'
+import os from 'os'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { Bonjour } from 'bonjour-service'
 import Store from 'electron-store' // 确保安装了 electron-store
@@ -89,6 +90,63 @@ ipcMain.on('window-max', (event) => {
   }
 })
 ipcMain.on('window-close', (event) => BrowserWindow.fromWebContents(event.sender)?.close())
+
+// 系统信息 IPC
+// 1. 定义全局变量存储上一次的 CPU 快照
+let lastCpus = os.cpus()
+// 2. 辅助函数：获取所有核心的总时间和空闲时间
+function getCpuInfo(cpus) {
+  let totalTime = 0
+  let idleTime = 0
+  for (const cpu of cpus) {
+    for (const type in cpu.times) {
+      totalTime += cpu.times[type]
+    }
+    idleTime += cpu.times.idle
+  }
+  return { total: totalTime, idle: idleTime }
+}
+
+ipcMain.handle('get-host-info', () => {
+  // 获取当前快照
+  const currentCpus = os.cpus()
+  // 计算前后的时间差
+  const start = getCpuInfo(lastCpus)
+  const end = getCpuInfo(currentCpus)
+  const idleDiff = end.idle - start.idle
+  const totalDiff = end.total - start.total
+  // 计算使用率百分比 (1 - 空闲占比)
+  // 如果调用间隔太短导致 totalDiff 为 0，则返回 0
+  const percentage = totalDiff === 0 ? 0 : (1 - idleDiff / totalDiff) * 100
+  // 更新快照供下一次计算使用
+  lastCpus = currentCpus
+
+  // 处理网络接口 (过滤掉 IPv6 和 localhost)
+  const nets = os.networkInterfaces()
+  const networks = []
+  for (const name of Object.keys(nets)) {
+    for (const net of nets[name]) {
+      // 仅获取 IPv4 且 非内部地址(127.0.0.1)
+      if ((net.family === 'IPv4' || net.family === 4) && !net.internal) {
+        networks.push({ name, ip: net.address, mac: net.mac })
+      }
+    }
+  }
+
+  return {
+    hostname: os.hostname(),
+    platform: os.platform(),
+    arch: os.arch(),
+    cpuModel: currentCpus[0]?.model || 'Unknown',
+    cpuCores: currentCpus.length,
+    cpuSpeed: currentCpus[0]?.speed || 0,
+    cpuUsage: parseFloat(percentage.toFixed(1)),
+    totalmem: os.totalmem(),
+    freemem: os.freemem(),
+    uptime: os.uptime(),
+    networks: networks
+  }
+})
 
 app.whenReady().then(() => {
   electronApp.setAppUserModelId('com.ros-desktop.client')

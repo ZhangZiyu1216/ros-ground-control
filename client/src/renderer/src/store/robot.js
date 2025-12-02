@@ -69,7 +69,21 @@ export const useRobotStore = defineStore('robot', () => {
     missedHeartbeats: 0,
     ipChanged: false,
 
-    sysInfo: {},
+    sysInfo: {
+      hostname: settings.hostname || 'Unknown',
+      os: '-',
+      arch: '-',
+      num_cpu: 0, // UI 需要读取这个
+      id: null // 唯一标识
+    },
+    stats: {
+      cpu_usage: 0,
+      mem_usage: 0,
+      net_rx_rate: 0,
+      net_tx_rate: 0,
+      temperature: 0,
+      disk_usage: 0
+    },
     serviceStatus: { roscore: 'unknown', bridge: 'unknown' },
     nodes: [],
     nodeLogs: {},
@@ -171,6 +185,34 @@ export const useRobotStore = defineStore('robot', () => {
     })
   }
 
+  const handleWsMessage = (client, event) => {
+    try {
+      // 第一次解析：解包信封 { stream, data, ... }
+      const msg = JSON.parse(event.data)
+
+      // 分流处理
+      if (msg.stream === 'system-stats') {
+        // [关键步骤] 二次解析：后端说 data 是字符串，必须再次 JSON.parse
+        let realData = msg.data
+        if (typeof realData === 'string') {
+          try {
+            realData = JSON.parse(realData)
+          } catch (e) {
+            console.warn('Failed to parse inner system-stats JSON', e)
+            return
+          }
+        }
+        // 更新 Store
+        client.stats = realData
+      } else {
+        // 其他日志流 (auth, system, node logs)
+        handleLogMessage(client, msg)
+      }
+    } catch (e) {
+      // ignore invalid json
+    }
+  }
+
   // 添加连接 (Connection Entry)
   const addConnection = async (settings) => {
     let currentKey = settings.id || settings.ip
@@ -229,13 +271,7 @@ export const useRobotStore = defineStore('robot', () => {
       client.status = 'ready'
 
       // 绑定消息处理
-      client.logWs.onmessage = (event) => {
-        try {
-          handleLogMessage(client, JSON.parse(event.data))
-        } catch (e) {
-          /* ignore */
-        }
-      }
+      client.logWs.onmessage = (event) => handleWsMessage(client, event)
       client.logWs.onclose = () => {
         client.status = 'disconnected'
       }
@@ -257,8 +293,7 @@ export const useRobotStore = defineStore('robot', () => {
           clients[realId].logWs.onclose = () => {
             clients[realId].status = 'disconnected'
           }
-          clients[realId].logWs.onmessage = (e) =>
-            handleLogMessage(clients[realId], JSON.parse(e.data))
+          clients[realId].logWs.onmessage = (event) => handleWsMessage(clients[realId], event)
           delete clients[currentKey]
           activeKey = realId
         } else {
@@ -519,6 +554,13 @@ export const useRobotStore = defineStore('robot', () => {
         client.playbackStatus = 'playing'
       }
     }
+  }
+
+  // [新增] 处理系统监控数据流
+  const handleSystemStats = (client, data) => {
+    if (!client || !data) return
+    // 直接替换 stats 对象，触发 Vue 响应式更新
+    client.stats = data
   }
 
   // [修复] 日志处理：保留对 system stream 的解析以显示节点生命周期

@@ -6,6 +6,9 @@ const api = {
   onWindowFocusChanged: (callback) =>
     ipcRenderer.on('window-focus-changed', (_e, value) => callback(value)),
 
+  // 获取本机信息
+  getHostInfo: () => ipcRenderer.invoke('get-host-info'),
+
   // mDNS
   startMdnsScan: () => ipcRenderer.invoke('start-mdns-scan'),
   stopMdnsScan: () => ipcRenderer.invoke('stop-mdns-scan'),

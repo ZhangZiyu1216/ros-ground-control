@@ -14,19 +14,25 @@
       <el-form-item label="连接模式" style="margin-bottom: 20px">
         <div class="mode-selector">
           <!-- Local Mode -->
-          <div
-            class="mode-card"
-            :class="{ active: form.mode === 'local' }"
-            @click="form.mode = 'local'"
+          <el-tooltip
+            :content="isWindows ? 'Windows 不支持 ROS 1 本地节点' : '连接本机的 ROS 环境'"
+            placement="top"
+            :disabled="!isWindows"
           >
-            <div class="card-icon-wrapper">
-              <el-icon><Monitor /></el-icon>
+            <div
+              class="mode-card"
+              :class="{ active: form.mode === 'local', 'is-disabled': isWindows }"
+              @click="form.mode = 'local'"
+            >
+              <div class="card-icon-wrapper">
+                <el-icon><Monitor /></el-icon>
+              </div>
+              <div class="card-text">
+                <span class="card-title">本地连接</span>
+              </div>
+              <div v-if="form.mode === 'local'" class="active-indicator"></div>
             </div>
-            <div class="card-text">
-              <span class="card-title">本地连接</span>
-            </div>
-            <div v-if="form.mode === 'local'" class="active-indicator"></div>
-          </div>
+          </el-tooltip>
 
           <!-- Remote Mode -->
           <div
@@ -140,7 +146,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, watch } from 'vue'
+import { ref, reactive, watch, onMounted } from 'vue'
 import { useLanScan } from '../composables/useLanScan'
 import {
   Connection,
@@ -166,9 +172,19 @@ const form = reactive({
   name: ''
 })
 
+const isWindows = ref(false)
+
 const hostAutocompleteRef = ref(null)
 const isDialogVisible = ref(props.visible) // 本地状态副本，用于 watch 同步
 const { discoveredDevices, start, stop } = useLanScan()
+
+// 组件挂载时检测平台
+onMounted(async () => {
+  if (window.api && window.api.getHostInfo) {
+    const info = await window.api.getHostInfo()
+    isWindows.value = info.platform === 'win32'
+  }
+})
 
 // 1. 监听 Props 变化 (打开/关闭弹窗)
 watch(
@@ -178,6 +194,13 @@ watch(
     if (newVal) {
       // 初始化表单
       const data = props.initialData
+
+      if (isWindows.value) {
+        form.mode = 'remote'
+      } else {
+        form.mode = data.mode || 'local'
+      }
+
       form.mode = data.mode || 'local'
       form.ip = data.ip || ''
       form.hostname = data.hostname || ''
@@ -252,15 +275,33 @@ function closeDialog() {
   emit('update:visible', false)
 }
 
-function applyAndClose() {
-  // 构造最终配置对象
-  const result = {
-    mode: form.mode,
-    ip: form.mode === 'local' ? '127.0.0.1' : form.ip,
-    hostname: form.mode === 'local' ? 'localhost' : form.hostname,
-    name: form.name
+const applyAndClose = async () => {
+  // 表单验证
+  if (form.mode === 'remote') {
+    if (!form.host) {
+      return
+    }
   }
-  emit('apply', result)
+
+  // [核心修复] 数据规范化 (Normalization)
+  // 确保传给后端和保存到 Config 的数据结构是标准的
+  const payload = {
+    // 基础 ID (如果有)
+    id: props.initialData?.id || null,
+
+    // 强制规范 IP 和 Mode
+    ip: form.mode === 'local' ? '127.0.0.1' : form.host,
+    port: form.port || 8080,
+    mode: form.mode, // [关键] 显式保存 mode 字段
+
+    // 智能名称处理
+    name: form.name || (form.mode === 'local' ? 'Localhost' : form.host),
+    hostname: form.mode === 'local' ? 'localhost' : '' // 辅助字段
+  }
+
+  // 发送事件
+  emit('apply', payload)
+  closeDialog()
 }
 </script>
 
@@ -308,6 +349,20 @@ function applyAndClose() {
   cursor: pointer;
   transition: all 0.2s ease;
   overflow: hidden;
+}
+
+.mode-card.is-disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  filter: grayscale(100%);
+  background-color: var(--el-fill-color-light);
+  border-color: var(--el-border-color-lighter);
+}
+
+.mode-card.is-disabled:hover {
+  transform: none;
+  box-shadow: none;
+  border-color: var(--el-border-color-lighter);
 }
 
 .mode-card:hover {

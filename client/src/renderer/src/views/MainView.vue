@@ -55,7 +55,18 @@
     <!-- 2. Main: 内容区域 -->
     <main class="app-main-content">
       <div v-show="activeTab === 'dashboard'" class="view-wrapper">
+        <!-- 模式 A: 总览模式 -->
+        <OverviewDashboard
+          v-if="isOverviewMode"
+          :saved-backends="savedBackends"
+          @switch-view="handleOverviewSwitch"
+          @add="openAddDialog"
+          @first-setup="openFirstTimeSetupDialog"
+          @delete="deleteBackend"
+        />
+        <!-- 模式 B: 详情模式 -->
         <Dashboard
+          v-else
           :current-backend-id="currentBackendId"
           :is-current-backend-ready="isCurrentBackendReady"
         />
@@ -111,8 +122,25 @@
 
           <!-- Popover 内容 (保持不变) -->
           <div class="backend-list-container">
-            <el-divider class="backend-list-header" content-position="left">可用连接</el-divider>
             <el-scrollbar max-height="280px">
+              <!-- 固定总览项 -->
+              <el-divider class="backend-list-header" content-position="left">可用连接</el-divider>
+              <div
+                class="backend-item overview-item"
+                :class="{ 'is-active': isOverviewMode }"
+                @click="switchToOverview"
+              >
+                <div class="menu-dot-container">
+                  <el-icon><Menu /></el-icon>
+                </div>
+                <div class="backend-info">
+                  <div class="backend-name">连接总览</div>
+                  <div class="backend-detail">系统控制中心</div>
+                </div>
+                <div v-if="isOverviewMode" class="active-check">
+                  <el-icon><Check /></el-icon>
+                </div>
+              </div>
               <div
                 v-for="(item, index) in savedBackends"
                 :key="index"
@@ -126,12 +154,12 @@
                 <div class="backend-info">
                   <div class="backend-name">{{ getBackendDisplayName(item) }}</div>
                   <div class="backend-detail">
-                    {{ item.settings.mode === 'local' ? 'Localhost' : item.settings.ip }}
+                    {{ item.settings.mode === 'local' ? '127.0.0.1' : item.settings.ip }}
                   </div>
                 </div>
                 <div class="backend-actions" @click.stop>
                   <el-button
-                    v-if="!isBackendRunning(item) && !isDefaultLocalBackend(item)"
+                    v-if="!isBackendRunning(item)"
                     link
                     class="action-icon del"
                     @click="deleteBackend(index)"
@@ -145,7 +173,7 @@
                     ><el-icon> <SwitchButton /> </el-icon
                   ></el-button>
                   <el-button
-                    v-if="!isBackendRunning(item) && !isDefaultLocalBackend(item)"
+                    v-if="!isBackendRunning(item)"
                     link
                     class="action-icon edit"
                     @click="openEditDialog(index, item)"
@@ -180,19 +208,21 @@
         </el-popover>
 
         <!-- 分割线 -->
-        <div class="footer-divider"></div>
+        <template v-if="!isOverviewMode">
+          <div class="footer-divider"></div>
 
-        <!-- 连接切换按钮 -->
-        <el-button
-          class="connect-switch-btn"
-          :type="isConnected ? 'danger' : 'success'"
-          :loading="isActionInProgress"
-          :disabled="!isCurrentBackendReady"
-          plain
-          @click="toggleServiceConnection"
-        >
-          {{ connectionButtonText }}
-        </el-button>
+          <!-- 连接切换按钮 -->
+          <el-button
+            class="connect-switch-btn"
+            :type="isConnected ? 'danger' : 'success'"
+            :loading="isActionInProgress"
+            :disabled="!isCurrentBackendReady"
+            plain
+            @click="toggleServiceConnection"
+          >
+            {{ connectionButtonText }}
+          </el-button>
+        </template>
       </div>
 
       <!-- Center: 核心导航 -->
@@ -224,19 +254,21 @@
 
       <!-- Right: 状态指示器 -->
       <div class="footer-section right">
-        <!-- Roscore Status -->
-        <div class="status-block" :class="roscoreProps.type">
-          <span class="block-label">Core</span>
-          <span class="block-value">{{ roscoreProps.text }}</span>
-          <div class="block-dot" :class="roscoreStatus"></div>
-        </div>
+        <template v-if="!isOverviewMode">
+          <!-- Roscore Status -->
+          <div class="status-block" :class="roscoreProps.type">
+            <span class="block-label">Core</span>
+            <span class="block-value">{{ roscoreProps.text }}</span>
+            <div class="block-dot" :class="roscoreStatus"></div>
+          </div>
 
-        <!-- Rosbridge Status -->
-        <div class="status-block" :class="rosbridgeProps.type">
-          <span class="block-label">Bridge</span>
-          <span class="block-value">{{ rosbridgeProps.text }}</span>
-          <div class="block-dot" :class="rosbridgeStatus"></div>
-        </div>
+          <!-- Rosbridge Status -->
+          <div class="status-block" :class="rosbridgeProps.type">
+            <span class="block-label">Bridge</span>
+            <span class="block-value">{{ rosbridgeProps.text }}</span>
+            <div class="block-dot" :class="rosbridgeStatus"></div>
+          </div>
+        </template>
       </div>
     </footer>
   </div>
@@ -267,6 +299,7 @@ import { ref, onMounted, computed, watch, toRaw } from 'vue'
 import Dashboard from './Dashboard.vue'
 import LogManager from './LogManager.vue'
 import TopicMonitor from './TopicMonitor.vue'
+import OverviewDashboard from '../components/OverviewDashboard.vue'
 import ConnectionDialog from '../components/ConnectionDialog.vue'
 import SettingsDialog from '../components/SettingsDialog.vue'
 import FirstTimeSetupDialog from '../components/FirstTimeSetupDialog.vue'
@@ -292,13 +325,15 @@ import {
   EditPen,
   MagicStick,
   Minus,
-  FullScreen
+  FullScreen,
+  Menu
 } from '@element-plus/icons-vue'
 
 // 窗口控制
 const minimizeWindow = () => window.electronWindow?.minimize()
 const maximizeWindow = () => window.electronWindow?.toggleMaximize()
 const closeWindow = () => window.electronWindow?.close()
+const isWindows = ref(false)
 // #endregion
 
 // #region 2. Global State & Configs
@@ -365,6 +400,10 @@ const showFirstTimeSetupDialog = ref(false)
 const showInfoDialog = ref(false)
 const isDeploying = ref(false)
 const isHoveringAdd = ref(false)
+
+// isOverviewMode: 总览模式
+const isOverviewMode = ref(true)
+
 // #endregion
 
 // #region 3. Computed Props
@@ -378,6 +417,8 @@ const isAnyLoading = computed(() =>
 )
 
 const connectionModeText = computed(() => {
+  if (isOverviewMode.value) return '总览模式'
+
   const s = connectionSettings.value
   if (!s) return '未配置'
   if (s.mode === 'local') return 'Localhost'
@@ -394,6 +435,10 @@ const connectionButtonText = computed(() => {
 })
 
 const backendStatusProps = computed(() => {
+  if (isOverviewMode.value) {
+    return { text: '连接总览', type: 'info', icon: Menu, color: '#909399' }
+  }
+
   const common = { text: connectionModeText.value }
   switch (currentBackendStatus.value) {
     case 'setting_up':
@@ -430,6 +475,8 @@ function getItemStatus(item) {
 }
 
 function isActiveBackend(item) {
+  if (isOverviewMode.value) return false
+
   if (!currentBackendId.value) return false
   const client = findClientBySettings(item.settings)
   return client && client === robotStore.activeClient
@@ -439,19 +486,55 @@ function isBackendRunning(item) {
   const status = getItemStatus(item)
   return status === 'ready' || status === 'setting_up'
 }
-
-function isDefaultLocalBackend(item) {
-  if (!item?.settings) return false
-  return (
-    item.settings.mode === 'local' &&
-    (item.settings.id === 'local' || item.settings.ip === '127.0.0.1')
-  )
-}
 // #endregion
 
 // #region 4. Logic & Actions
 
-// [修复] 打开编辑器窗口 (调用 Store 方法以广播 Token)
+// 切换到总览
+function switchToOverview() {
+  resetView() // useConnection 中已有的方法，将 activeID 设为 null
+  isOverviewMode.value = true
+  isPopoverVisible.value = false
+  activeTab.value = 'dashboard'
+}
+
+// 供 OverviewDashboard 组件调用的回调，用于点击卡片进入详情
+const handleOverviewSwitch = async (payload) => {
+  const { index, action } = payload
+  // 1. 通过索引直接获取配置对象，解决 ID 不一致导致的查找失败问题
+  const targetItem = savedBackends.value[index]
+
+  if (!targetItem) {
+    ElMessage.warning('无法找到对应的连接配置')
+    return
+  }
+
+  switch (action) {
+    case 'jump':
+      // 跳转进详情页
+      await switchToBackend(targetItem)
+      activeTab.value = 'dashboard' // 确保 Tab 切回控制台
+      break
+
+    case 'connect':
+      // 发起连接但停留在当前页
+      await connect(targetItem.settings)
+      break
+
+    case 'disconnect':
+      // 断开连接
+      if (targetItem) {
+        // 复用现有的断开逻辑 (含确认弹窗)
+        await handleManualDisconnect(targetItem)
+      }
+      break
+
+    default:
+      console.warn('Unknown action:', action)
+  }
+}
+
+// 打开编辑器窗口 (调用 Store 方法以广播 Token)
 function openEditorWindow() {
   robotStore.openEditor()
 }
@@ -515,7 +598,6 @@ function openAddDialog() {
   showConnection.value = true
 }
 function openEditDialog(index, item) {
-  if (isDefaultLocalBackend(item)) return ElMessage.warning('默认连接不可编辑')
   if (isBackendRunning(savedBackends.value[index])) return ElMessage.warning('请先断开连接')
   dialogMode.value = 'edit'
   editingBackendIndex.value = index
@@ -603,13 +685,18 @@ async function switchToBackend(item) {
     ? client.id || Object.keys(robotStore.clients).find((k) => robotStore.clients[k] === client)
     : null
 
-  if (currentBackendId.value && clientKey === currentBackendId.value) return
+  if (!isOverviewMode.value && currentBackendId.value && clientKey === currentBackendId.value)
+    return
+
+  // 已经连接且状态为 Ready，直接跳转
   if (client && client.status === 'ready') {
     switchView(clientKey)
     connectionSettings.value = item.settings
+    isOverviewMode.value = false
     return
   }
 
+  // 否则尝试连接
   const previousId = currentBackendId.value
   const previousSettings = JSON.parse(JSON.stringify(connectionSettings.value))
   connectionSettings.value = item.settings
@@ -638,15 +725,19 @@ async function switchToBackend(item) {
 
 function deleteBackend(index) {
   const item = savedBackends.value[index]
-  if (isDefaultLocalBackend(item)) return ElMessage.warning('不可删除 Localhost')
   if (isBackendRunning(item)) return
   ElMessageBox.confirm('确定删除此配置?', '警告', { type: 'warning' }).then(async () => {
     const isCurrent = JSON.stringify(item.settings) === JSON.stringify(connectionSettings.value)
     savedBackends.value.splice(index, 1)
     await saveBackendsToStore()
     if (isCurrent) {
-      connectionSettings.value = savedBackends.value[0]?.settings || DEFAULT_SETTINGS
+      connectionSettings.value =
+        savedBackends.value[0]?.settings ||
+        (isWindows.value ? { mode: 'remote', ip: '', name: '' } : { ...DEFAULT_SETTINGS })
+
+      // 如果删除了当前项，切回总览
       resetView()
+      isOverviewMode.value = true
     }
     ElMessage.success('已删除')
   })
@@ -682,6 +773,7 @@ async function handleManualDisconnect(item) {
 }
 
 async function handleConfigButtonClick() {
+  if (isOverviewMode.value) return
   // 严格防抖检查
   if (isActionInProgress.value) return
 
@@ -756,8 +848,11 @@ const saveBackendsToStore = async () =>
 onMounted(async () => {
   // [核心] 启动 Store 的 IPC 监听，确保编辑器可以请求 Token
   robotStore.setupSyncListeners()
-
   window.api.onWindowFocusChanged((v) => (isWindowFocused.value = v))
+
+  const hostInfo = await window.api.getHostInfo()
+  // process.platform 返回 'win32' 代表 Windows
+  isWindows.value = hostInfo.platform === 'win32'
 
   // Load Settings
   const sApp = await window.api.getConfig('app_settings')
@@ -770,40 +865,18 @@ onMounted(async () => {
     : []
 
   if (valid.length > 0) savedBackends.value = valid
-  else {
-    savedBackends.value = [{ name: 'Localhost', settings: DEFAULT_SETTINGS }]
-    await saveBackendsToStore()
-  }
+  else savedBackends.value = []
+  saveBackendsToStore()
 
   // Restore last connection settings
   const sLastConn = await window.api.getConfig('last_connection_settings')
-  if (sLastConn) connectionSettings.value = sLastConn
-  else connectionSettings.value = savedBackends.value[0].settings
-
-  // Hydrate Offline Store (Optimistic UI)
-  const current = connectionSettings.value
-  const match = savedBackends.value.find(
-    (b) =>
-      (current.hostname && b.settings.hostname === current.hostname) || b.settings.ip === current.ip
-  )
-
-  if (match && match.settings.id) {
-    // 使用 Store 的标准方法初始化，确保 nodeLogs 等字段存在
-    robotStore.initOfflineClient({
-      ...match.settings,
-      name: match.name // 确保传入名称
-    })
-
-    // 设置活跃 ID
-    robotStore.activeID = match.settings.id
+  if (sLastConn) {
+    // 仅仅是把 IP/Port 填回到 footer 的输入框里，方便用户直接点连接
+    connectionSettings.value = sLastConn
   }
-
-  // Auto Connect
-  if (appSettings.value.autoConnect && connectionSettings.value.mode) {
-    connect(connectionSettings.value)
-      .then(() => handleAutoStartService())
-      .catch((e) => console.log('Auto-connect skipped:', e))
-  }
+  // 6. [核心修改] 强制进入总览模式
+  isOverviewMode.value = true
+  resetView()
 })
 
 // Watchers
@@ -1387,7 +1460,11 @@ html.dark .el-divider.backend-list-header .el-divider__text {
 
 /* 状态点 */
 .status-dot-container {
-  margin-right: 12px;
+  margin-left: 3px;
+  margin-right: 9px;
+}
+.menu-dot-container {
+  margin-right: 6px;
 }
 
 .list-status-dot {
