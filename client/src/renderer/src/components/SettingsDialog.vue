@@ -153,7 +153,7 @@ const isDarkMode = useDark({
 
 onMounted(() => {
   // 初始化检测
-  isDarkMode.value = document.documentElement.classList.contains('dark')
+  isDarkMode.value = false
 })
 
 // 逻辑联动：停止 Core 必然停止 Bridge

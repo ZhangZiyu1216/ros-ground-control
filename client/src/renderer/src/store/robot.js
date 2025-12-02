@@ -270,9 +270,14 @@ export const useRobotStore = defineStore('robot', () => {
       }
 
       activeID.value = activeKey
-      updateServiceStatusFromProcs(clients[activeKey], procList.processes)
-      syncNodes(activeKey)
-      syncSequences(activeKey)
+      const finalClient = clients[activeKey]
+
+      await Promise.all([syncNodes(activeKey), syncSequences(activeKey)])
+
+      if (procList && procList.processes) {
+        updateServiceStatusFromProcs(finalClient, procList.processes)
+      }
+
       startHealthCheck(activeKey)
       broadcastClientState(clients[activeKey])
     } catch (e) {
@@ -443,6 +448,8 @@ export const useRobotStore = defineStore('robot', () => {
 
   const updateServiceStatusFromProcs = (client, processes) => {
     if (!Array.isArray(processes)) return
+
+    // 1. 基础服务状态
     const hasCore = processes.some((p) => p.id.includes('roscore') || p.cmd.includes('roscore'))
     const hasBridge = processes.some(
       (p) => p.id.includes('foxglove') || p.cmd.includes('rosbridge')
@@ -450,6 +457,7 @@ export const useRobotStore = defineStore('robot', () => {
     client.serviceStatus.roscore = hasCore ? 'active' : 'inactive'
     client.serviceStatus.bridge = hasBridge ? 'active' : 'inactive'
 
+    // 2. 节点状态同步 (保持不变)
     if (client.nodes) {
       client.nodes.forEach((node) => {
         const proc = processes.find((p) => p.id === node.name)
@@ -470,18 +478,45 @@ export const useRobotStore = defineStore('robot', () => {
         }
       })
     }
-    // 检查录制进程
-    if (client.recordingId && !processes.some((p) => p.id === client.recordingId)) {
-      client.recordingId = null
-      ElNotification({ title: '录制结束', message: 'Rosbag 录制已停止', type: 'info' })
+
+    // 录制状态的同步与认领 (Adoption)
+    // A. 检测当前 ID 是否存活
+    if (client.recordingId) {
+      if (!processes.some((p) => p.id === client.recordingId)) {
+        client.recordingId = null
+        ElNotification({ title: '录制结束', message: 'Rosbag 录制已停止', type: 'info' })
+      }
     }
-    // 检查回放进程
+    // B. [新增] 自动认领：如果本地没记录，但远程有 bag 进程，认领它！
+    else {
+      // 查找 cmd 包含 'rosbag record' 的进程
+      const activeBag = processes.find(
+        (p) => p.id.startsWith('bag-') || p.cmd.includes('rosbag record')
+      )
+      if (activeBag) {
+        console.log('[Sync] Adopted existing recording process:', activeBag.id)
+        client.recordingId = activeBag.id
+      }
+    }
+
+    // 回放状态的同步与认领
     if (client.playbackId) {
-      const isAlive = processes.some((p) => p.id === client.playbackId)
-      if (!isAlive) {
+      if (!processes.some((p) => p.id === client.playbackId)) {
         client.playbackId = null
         client.playbackStatus = 'stopped'
-        ElNotification({ title: '回放结束', message: 'ROS 包回放已停止', type: 'info' })
+        ElNotification({ title: '回放结束', message: '回放进程已退出', type: 'info' })
+      }
+    }
+    // B. [新增] 自动认领回放
+    else {
+      const activePlay = processes.find(
+        (p) => p.id.startsWith('play-') || p.cmd.includes('rosbag play')
+      )
+      if (activePlay) {
+        console.log('[Sync] Adopted existing playback process:', activePlay.id)
+        client.playbackId = activePlay.id
+        // 认领时我们不知道是 paused 还是 playing，暂定 playing，后续可通过心跳优化
+        client.playbackStatus = 'playing'
       }
     }
   }
@@ -587,19 +622,77 @@ export const useRobotStore = defineStore('robot', () => {
   const controlRosStack = async (clientId, action) => {
     const client = clients[clientId]
     if (!client?.api) return
+
     client.isStackLoading = true
     try {
+      // [防御策略 1] 如果是停止操作，必须先优雅停止依赖进程
       if (action === 'stop') {
-        if (client.recordingId) await bagStop(clientId, client.recordingId)
-        const promises = client.nodes
-          .filter((n) => n.status === 'running' || n.status === 'starting')
-          .map((n) => stopNodeProcess(clientId, n.name))
-        await Promise.all(promises)
+        const stopPromises = []
+
+        // A. 停止录制 (至关重要：防止文件损坏)
+        if (client.recordingId) {
+          console.log('[AutoStop] Stopping active recording to save data...')
+          // 不放入 Promise.all，而是 await，确保文件 flush 完成
+          try {
+            await bagStop(clientId, client.recordingId)
+            ElNotification({
+              title: '录制已保存',
+              message: '在停止服务前已自动结束录制并保存数据。',
+              type: 'success'
+            })
+          } catch (e) {
+            console.warn('[AutoStop] Failed to stop recording gracefully:', e)
+          }
+        }
+
+        // B. 停止回放
+        if (client.playbackId) {
+          console.log('[AutoStop] Stopping active playback...')
+          stopPromises.push(
+            bagPlayStop(clientId).catch((e) => console.warn('Stop playback failed', e))
+          )
+        }
+
+        // C. 停止所有普通节点
+        if (client.nodes) {
+          client.nodes.forEach((n) => {
+            if (n.status === 'running' || n.status === 'starting') {
+              n.status = 'stopping'
+              n._stopTime = Date.now()
+              stopPromises.push(stopNodeProcess(clientId, n.name).catch(() => {}))
+            }
+          })
+        }
+
+        // 并行等待回放和节点停止 (录制已在上面单独 await)
+        if (stopPromises.length > 0) {
+          await Promise.all(stopPromises)
+        }
       }
-      await client.api.post('/ros/action', { service: 'stack', action })
-      await sleep(2000)
-      const res = await client.api.get('/proc/list')
-      updateServiceStatusFromProcs(client, res.processes)
+
+      // 发送 Stack 指令
+      await client.api.post('/ros/action', { service: 'stack', action: action })
+
+      // 轮询等待状态变更 (保持原逻辑)
+      const targetState = action === 'start' ? 'active' : 'inactive'
+      let retries = 0
+      while (retries < 15) {
+        await sleep(1000)
+        try {
+          const res = await client.api.get('/proc/list')
+          updateServiceStatusFromProcs(client, res.processes) // 状态更新全靠它
+          const { roscore, bridge } = client.serviceStatus
+
+          if (targetState === 'active') {
+            if (roscore === 'active' && bridge === 'active') break
+          } else {
+            if (roscore !== 'active' && bridge !== 'active') break
+          }
+        } catch (e) {
+          /* ignore */
+        }
+        retries++
+      }
     } finally {
       client.isStackLoading = false
     }

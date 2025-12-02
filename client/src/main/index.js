@@ -6,11 +6,14 @@ import Store from 'electron-store' // 确保安装了 electron-store
 import editorWindowManager from './EditorWindowManager.js'
 import sshDiscovery from './SshDiscovery'
 import { deployAgent } from './AgentDeployer'
-import icon from '../../resources/icon.png'
+import icon_png from '../../resources/icon.png?asset'
+import icon_ico from '../../resources/icon.ico?asset'
 
 let win
-// 修正 Store 初始化 (通常不需要 .default，除非特定的打包配置)
 const store = new Store.default()
+
+app.setName('ROS Ground Control')
+app.setAppUserModelId('com.zzy.rosgroundcontrol')
 
 function createWindow() {
   win = new BrowserWindow({
@@ -20,7 +23,7 @@ function createWindow() {
     minHeight: 768,
     show: false,
     autoHideMenuBar: true,
-    ...(process.platform === 'linux' ? { icon } : {}),
+    icon: process.platform === 'linux' ? icon_png : icon_ico,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
@@ -28,7 +31,8 @@ function createWindow() {
       webSecurity: false // 允许加载本地资源或跨域
     },
     frame: false,
-    titleBarStyle: 'hiddenInset'
+    titleBarStyle: 'hiddenInset',
+    title: 'ROS Ground Control'
   })
 
   // 强制直连模式，避免局域网 IP 走系统代理导致 WS 连不上
