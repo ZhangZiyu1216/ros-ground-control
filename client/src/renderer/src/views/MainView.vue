@@ -518,7 +518,7 @@ const handleOverviewSwitch = async (payload) => {
 
     case 'connect':
       // 发起连接但停留在当前页
-      await connect(targetItem.settings)
+      await switchToBackend(targetItem, true)
       break
 
     case 'disconnect':
@@ -678,7 +678,7 @@ async function handleConnectionApply(newSettings) {
   }
 }
 
-async function switchToBackend(item) {
+async function switchToBackend(item, stopJump = false) {
   isPopoverVisible.value = false
   const client = findClientBySettings(item.settings)
   const clientKey = client
@@ -688,7 +688,7 @@ async function switchToBackend(item) {
   if (!isOverviewMode.value && currentBackendId.value && clientKey === currentBackendId.value)
     return
 
-  // 已经连接且状态为 Ready，直接跳转
+  // 已经连接且状态为 Ready，总是直接跳转
   if (client && client.status === 'ready') {
     switchView(clientKey)
     connectionSettings.value = item.settings
@@ -700,8 +700,11 @@ async function switchToBackend(item) {
   const previousId = currentBackendId.value
   const previousSettings = JSON.parse(JSON.stringify(connectionSettings.value))
   connectionSettings.value = item.settings
-
   try {
+    // 明确指示是否需要跳转
+    if (stopJump) isOverviewMode.value = true
+    else isOverviewMode.value = false
+
     await connect(item.settings)
     await checkAndSaveIpChange()
     await handleAutoStartService()

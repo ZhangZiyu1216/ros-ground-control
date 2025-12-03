@@ -3,10 +3,12 @@ package api
 import (
 	"net"
 	"net/http"
+	"os"
 	"ros-ground-control/agent/pkg/config"
 	"runtime"
 
 	"github.com/gin-gonic/gin"
+	"github.com/shirou/gopsutil/v3/cpu"
 )
 
 // 获取当前配置
@@ -59,11 +61,25 @@ func handlePing(c *gin.Context) {
 
 func handleSysInfo(c *gin.Context) {
 	cfg := config.GetConfig()
+	// 1. 获取主机名
+	hostname, err := os.Hostname()
+	if err != nil {
+		hostname = "unknown"
+	}
+	// 2. 获取 CPU 型号
+	cpuModel := "unknown"
+	// cpu.Info() 返回一个切片，包含每个核的信息
+	// 我们通常只需要取第一个核的 ModelName 即可代表整个 CPU
+	infos, err := cpu.Info()
+	if err == nil && len(infos) > 0 {
+		cpuModel = infos[0].ModelName
+	}
 	c.JSON(200, gin.H{
-		"os":         runtime.GOOS,
-		"arch":       runtime.GOARCH,
-		"num_cpu":    runtime.NumCPU(),
-		"ros_distro": "noetic",    // 这里后续应从环境变量读取
-		"id":         cfg.AgentID, // 稳定的 UUID
+		"os":        runtime.GOOS,
+		"arch":      runtime.GOARCH,
+		"num_cpu":   runtime.NumCPU(),
+		"cpu_model": cpuModel,
+		"id":        cfg.AgentID, // 稳定的 UUID
+		"hostname":  hostname,
 	})
 }
