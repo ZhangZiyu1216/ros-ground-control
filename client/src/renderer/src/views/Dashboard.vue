@@ -168,51 +168,55 @@
           </div>
 
           <!-- “新增节点”卡片 -->
-          <el-card v-if="editingNodeId === '__new__'" class="node-card is-editing">
-            <template #header>
-              <div class="card-header">
-                <div class="header-row">
-                  <el-tag size="small" type="info" />
+          <div class="node-wrapper">
+            <el-card v-if="editingNodeId === '__new__'" class="node-card add-new-card is-editing">
+              <template #header>
+                <div class="card-header">
+                  <div class="header-left">
+                    <div class="header-row">
+                      <el-tag size="small" type="info" />
+                    </div>
+                    <div class="header-row">
+                      <el-input
+                        v-model="form.name"
+                        placeholder="节点名称"
+                        size="small"
+                        class="name-input"
+                      />
+                    </div>
+                  </div>
                 </div>
-                <div class="header-row">
-                  <el-input
-                    v-model="form.name"
-                    placeholder="节点名称"
-                    size="small"
-                    class="name-input"
-                  />
-                </div>
+              </template>
+              <div class="card-body-content">
+                <el-button class="launch-path-button" @click="openFileBrowser('launch')">
+                  {{ getDisplayPath(form.args) || '选择launch文件' }}
+                </el-button>
               </div>
-            </template>
-            <div class="card-body-content">
-              <el-button class="launch-path-button" @click="openFileBrowser('launch')">
-                {{ getDisplayPath(form.args) || '选择launch文件' }}
-              </el-button>
-            </div>
-            <template #footer>
-              <div class="card-footer">
-                <div class="footer-edit-actions">
-                  <el-button type="primary" size="small" @click.stop="saveNode">添加</el-button>
-                  <el-button size="small" @click.stop="cancelEditing">取消</el-button>
+              <template #footer>
+                <div class="card-footer">
+                  <div class="footer-edit-actions">
+                    <el-button type="primary" size="small" @click.stop="saveNode">添加</el-button>
+                    <el-button size="small" @click.stop="cancelEditing">取消</el-button>
+                  </div>
                 </div>
-              </div>
-            </template>
-          </el-card>
-          <!-- “添加新节点”的占位符按钮 -->
-          <el-card
-            v-else
-            class="node-card add-new-card"
-            :class="{ 'is-disabled': !isCurrentBackendReady }"
-            @click="startAdding"
-          >
-            <span
-              :style="{
-                fontSize: '18px',
-                marginLeft: '8px'
-              }"
-              >+ 添加新节点</span
+              </template>
+            </el-card>
+            <!-- “添加新节点”的占位符按钮 -->
+            <el-card
+              v-else
+              class="node-card add-new-card"
+              :class="{ 'is-disabled': !isCurrentBackendReady }"
+              @click="startAdding"
             >
-          </el-card>
+              <span
+                :style="{
+                  fontSize: '18px',
+                  marginLeft: '8px'
+                }"
+                >+ 添加新节点</span
+              >
+            </el-card>
+          </div>
         </el-scrollbar>
       </div>
     </div>
@@ -444,6 +448,7 @@
     :close-on-click-modal="false"
     :show-close="false"
     draggable
+    append-to-body
   >
     <div style="height: 100%; overflow: hidden">
       <FileBrowser
@@ -1033,6 +1038,7 @@ const statusType = (status) => {
 onMounted(async () => {
   if (props.currentBackendId) {
     await robotStore.loadNodesFromCache(props.currentBackendId)
+    await robotStore.refreshStatus(props.currentBackendId)
   }
 })
 
@@ -1041,6 +1047,7 @@ watch(
   async (newId, oldId) => {
     if (newId) {
       await robotStore.loadNodesFromCache(newId)
+      await robotStore.refreshStatus(newId)
     }
     if (newId !== oldId) {
       expandedNodeIds.value.clear()

@@ -125,7 +125,7 @@
                 type="primary"
                 round
                 tag="a"
-                href="https://github.com/your-repo"
+                href="https://github.com/ZhangZiyu1216/ros-ground-control"
                 target="_blank"
               >
                 <template #icon

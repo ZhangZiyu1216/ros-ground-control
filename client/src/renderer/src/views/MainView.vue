@@ -55,21 +55,25 @@
     <!-- 2. Main: 内容区域 -->
     <main class="app-main-content">
       <div v-show="activeTab === 'dashboard'" class="view-wrapper">
-        <!-- 模式 A: 总览模式 -->
-        <OverviewDashboard
-          v-if="isOverviewMode"
-          :saved-backends="savedBackends"
-          @switch-view="handleOverviewSwitch"
-          @add="openAddDialog"
-          @first-setup="openFirstTimeSetupDialog"
-          @delete="deleteBackend"
-        />
-        <!-- 模式 B: 详情模式 -->
-        <Dashboard
-          v-else
-          :current-backend-id="currentBackendId"
-          :is-current-backend-ready="isCurrentBackendReady"
-        />
+        <transition name="view-fade">
+          <!-- 模式 A: 总览模式 -->
+          <OverviewDashboard
+            v-if="isOverviewMode"
+            key="overview"
+            :saved-backends="savedBackends"
+            @switch-view="handleOverviewSwitch"
+            @add="openAddDialog"
+            @first-setup="openFirstTimeSetupDialog"
+            @delete="deleteBackend"
+          />
+          <!-- 模式 B: 详情模式 -->
+          <Dashboard
+            v-else
+            key="detail"
+            :current-backend-id="currentBackendId"
+            :is-current-backend-ready="isCurrentBackendReady"
+          />
+        </transition>
       </div>
       <div v-show="activeTab === 'monitor'" class="view-wrapper">
         <TopicMonitor
@@ -88,7 +92,7 @@
     <!-- 3. Footer: 底部栏 -->
     <footer class="app-glass-footer">
       <!-- Left: 连接配置 -->
-      <div class="footer-section left">
+      <div class="footer-section left" @wheel.prevent="handleConnectionWheel">
         <!-- 1. 连接列表按钮 -->
         <el-popover
           v-model:visible="isPopoverVisible"
@@ -206,23 +210,6 @@
             </div>
           </div>
         </el-popover>
-
-        <!-- 分割线 -->
-        <template v-if="!isOverviewMode">
-          <div class="footer-divider"></div>
-
-          <!-- 连接切换按钮 -->
-          <el-button
-            class="connect-switch-btn"
-            :type="isConnected ? 'danger' : 'success'"
-            :loading="isActionInProgress"
-            :disabled="!isCurrentBackendReady"
-            plain
-            @click="toggleServiceConnection"
-          >
-            {{ connectionButtonText }}
-          </el-button>
-        </template>
       </div>
 
       <!-- Center: 核心导航 -->
@@ -255,19 +242,38 @@
       <!-- Right: 状态指示器 -->
       <div class="footer-section right">
         <template v-if="!isOverviewMode">
-          <!-- Roscore Status -->
-          <div class="status-block" :class="roscoreProps.type">
-            <span class="block-label">Core</span>
-            <span class="block-value">{{ roscoreProps.text }}</span>
-            <div class="block-dot" :class="roscoreStatus"></div>
-          </div>
+          <el-button
+            class="connect-switch-btn"
+            :type="isConnected ? 'danger' : 'success'"
+            :loading="isActionInProgress"
+            :disabled="!isCurrentBackendReady"
+            plain
+            @click="toggleServiceConnection"
+          >
+            <div class="connect-switch-btn-inner">
+              <!-- Roscore Status -->
+              <div class="status-indicators">
+                <div class="status-block" :class="roscoreProps.type">
+                  <span class="block-label">Core</span>
+                  <span class="block-value">{{ roscoreProps.text }}</span>
+                  <div class="block-dot" :class="roscoreStatus"></div>
+                </div>
 
-          <!-- Rosbridge Status -->
-          <div class="status-block" :class="rosbridgeProps.type">
-            <span class="block-label">Bridge</span>
-            <span class="block-value">{{ rosbridgeProps.text }}</span>
-            <div class="block-dot" :class="rosbridgeStatus"></div>
-          </div>
+                <!-- Rosbridge Status -->
+                <div class="status-block" :class="rosbridgeProps.type">
+                  <span class="block-label">Bridge</span>
+                  <span class="block-value">{{ rosbridgeProps.text }}</span>
+                  <div class="block-dot" :class="rosbridgeStatus"></div>
+                </div>
+              </div>
+
+              <!--  按钮文字 (默认隐藏，Hover 显示) -->
+              <div class="status-hover-text">
+                <el-icon><SwitchButton /></el-icon>
+                <span>{{ connectionButtonText }}</span>
+              </div>
+            </div>
+          </el-button>
         </template>
       </div>
     </footer>
@@ -678,18 +684,35 @@ async function handleConnectionApply(newSettings) {
   }
 }
 
-async function switchToBackend(item, stopJump = false) {
+// 切换到对应连接（默认行为）
+// stopJump: 是否阻止跳转到详情页（用于点击按钮）
+// syopConnect: 是否阻止连接（仅切换视图，用于滚轮事件
+async function switchToBackend(item, stopJump = false, stopConnect = false) {
   isPopoverVisible.value = false
-  const client = findClientBySettings(item.settings)
-  const clientKey = client
+  let client = findClientBySettings(item.settings)
+  let clientKey = client
     ? client.id || Object.keys(robotStore.clients).find((k) => robotStore.clients[k] === client)
     : null
 
   if (!isOverviewMode.value && currentBackendId.value && clientKey === currentBackendId.value)
     return
 
+  // 如果阻止连接，仅切换视图
   // 已经连接且状态为 Ready，总是直接跳转
-  if (client && client.status === 'ready') {
+  if ((client && client.status === 'ready') || stopConnect) {
+    // 如果 Client 不存在，先创建一个离线的！
+    if (!client) {
+      // 使用之前在 robot.js 增加的 initOfflineClient
+      // 注意：initOfflineClient 需要传入 settings，并最好带上 name
+      const hydrateSettings = {
+        ...item.settings,
+        name: item.name || item.settings.ip
+      }
+      robotStore.initOfflineClient(hydrateSettings)
+      // 重新获取 ID (initOfflineClient 会设置 activeID，我们这里显式获取一下更稳妥)
+      // 由于 initOfflineClient 内部逻辑，settings.id 此时应该已经是 Key 了
+      clientKey = item.settings.id || item.settings.ip
+    }
     switchView(clientKey)
     connectionSettings.value = item.settings
     isOverviewMode.value = false
@@ -836,6 +859,71 @@ async function handleAutoStartService() {
   if (appSettings.value.autoStartRos) await connectServices()
 }
 
+// [新增] 滚轮切换逻辑
+// 1. 构建一个扁平化的可切换列表 [Overview, ...SavedBackends]
+const switchableList = computed(() => {
+  // 定义总览项的包装结构
+  const list = [{ type: 'overview', data: null }]
+
+  // 追加已保存的后端列表
+  if (savedBackends.value && savedBackends.value.length > 0) {
+    savedBackends.value.forEach((item) => {
+      list.push({ type: 'backend', data: item })
+    })
+  }
+  return list
+})
+
+// 2. 计算当前所处的索引
+const currentIndex = computed(() => {
+  // 如果是总览模式，索引为 0
+  if (isOverviewMode.value) return 0
+
+  // 否则，在 savedBackends 中查找当前配置
+  // 使用 IP 和 Mode 进行匹配 (因为 settings 对象引用可能不同)
+  const idx = savedBackends.value.findIndex(
+    (b) =>
+      b.settings.ip === connectionSettings.value.ip &&
+      b.settings.mode === connectionSettings.value.mode
+  )
+
+  // 如果找到了，索引需要 +1 (因为 0 是总览)
+  // 如果没找到 (比如是临时的)，默认归为 0 或处理为 -1，这里归为 0 安全
+  return idx !== -1 ? idx + 1 : 0
+})
+
+// 3. 处理滚轮事件
+function handleConnectionWheel(e) {
+  const list = switchableList.value
+  if (list.length <= 1) return // 只有一个总览，没法切
+
+  let newIndex = currentIndex.value
+
+  // e.deltaY > 0 是向下滚动 (Next)
+  if (e.deltaY > 0) {
+    newIndex++
+    if (newIndex >= list.length) newIndex = 0 // 循环回头部
+  }
+  // e.deltaY < 0 是向上滚动 (Prev)
+  else {
+    newIndex--
+    if (newIndex < 0) newIndex = list.length - 1 // 循环到底部
+  }
+
+  // 执行切换
+  const target = list[newIndex]
+
+  // 避免重复切换到当前项
+  if (newIndex === currentIndex.value) return
+
+  if (target.type === 'overview') {
+    switchToOverview()
+  } else {
+    console.log('Switching to backend via wheel:', target.data)
+    switchToBackend(target.data, false, true) // 切换但不连接
+  }
+}
+
 const handleAppReset = async () => {
   await window.api.setConfig('saved_backends', [])
   await window.api.setConfig('last_connection_settings', null)
@@ -905,6 +993,7 @@ const getStatusProps = (status) => {
 const roscoreProps = computed(() => getStatusProps(roscoreStatus.value))
 const rosbridgeProps = computed(() => getStatusProps(rosbridgeStatus.value))
 
+/*
 watch([roscoreStatus, rosbridgeStatus], ([nR, nB], [oR, oB]) => {
   if ((oR === 'connected' || oB === 'connected') && nR !== 'connected' && nB !== 'connected') {
     ElNotification({
@@ -915,6 +1004,7 @@ watch([roscoreStatus, rosbridgeStatus], ([nR, nB], [oR, oB]) => {
     })
   }
 })
+*/
 // #endregion
 </script>
 
@@ -1060,6 +1150,9 @@ watch([roscoreStatus, rosbridgeStatus], ([nR, nB], [oR, oB]) => {
   height: 100%;
   width: 100%;
   /* 确保 Dashboard 内部也能撑满 */
+  position: relative;
+  /* 确保超出部分隐藏 */
+  overflow: hidden;
   display: flex;
   flex-direction: column;
 }
@@ -1071,8 +1164,9 @@ watch([roscoreStatus, rosbridgeStatus], ([nR, nB], [oR, oB]) => {
   height: var(--footer-height);
   display: flex;
   align-items: center;
+  position: relative;
+  justify-content: space-between;
   gap: 20px;
-  /* 区块间距 */
 }
 
 /* 左侧区域 */
@@ -1081,18 +1175,23 @@ watch([roscoreStatus, rosbridgeStatus], ([nR, nB], [oR, oB]) => {
   margin-left: 6px;
   align-items: center;
   gap: 4px;
-  width: 100%;
-  /* 填满 grid cell */
+  max-width: 25%;
+  flex: 1;
+  min-width: 0; /* 允许 Flex 子项收缩到内容宽度以下 */
 }
 
 .current-conn-btn {
   width: auto;
-  /* 防止溢出 */
   height: 32px;
   font-size: 18px;
   justify-content: flex-start;
   border: 1px solid transparent;
   transition: all 0.3s;
+  display: inline-flex;
+  align-items: center;
+  flex: 1; /* 占据左侧容器的剩余空间 */
+  min-width: 0; /* [关键] 允许按钮被压缩 */
+  max-width: 100%; /* 不超过父容器 */
 }
 
 .current-conn-btn:hover {
@@ -1100,27 +1199,30 @@ watch([roscoreStatus, rosbridgeStatus], ([nR, nB], [oR, oB]) => {
   background: transparent;
 }
 
-.connect-switch-btn {
-  width: 118px;
-  height: 32px;
-  font-size: 14px;
-  font-weight: 600;
-  border-radius: 16px;
-  padding: 0;
-}
-
 /* 连接按钮内的文字截断 */
 .conn-text {
   flex: 1;
   text-align: left;
   overflow: hidden;
+  white-space: nowrap;
+  overflow: hidden;
   text-overflow: ellipsis;
-  margin: 0 0px;
+  margin: 0 8px;
   font-size: 18px;
   font-weight: 600;
 }
 
 /* 中间：胶囊导航 (Nav Capsule) */
+/* --- Center Section: 导航 (绝对居中) --- */
+.footer-section.center {
+  /* [核心] 绝对定位，脱离文档流，确保永远在屏幕正中间 */
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 10; /* 确保浮在上方 */
+}
+
 .nav-capsule {
   width: auto;
   display: flex;
@@ -1129,6 +1231,7 @@ watch([roscoreStatus, rosbridgeStatus], ([nR, nB], [oR, oB]) => {
   border-radius: 24px;
   border: 1px solid var(--glass-border);
   gap: 2px;
+  flex-shrink: 0;
 }
 
 .nav-item {
@@ -1165,11 +1268,83 @@ watch([roscoreStatus, rosbridgeStatus], ([nR, nB], [oR, oB]) => {
 /* 右侧区域 */
 .footer-section.right {
   display: flex;
-  margin-right: 20px;
+  margin-right: 16px;
   justify-content: flex-end;
-  /* 靠右对齐 */
-  gap: 10px;
   width: 100%;
+  min-width: 0;
+  max-width: 40%; /* 限制最大宽度，与左侧对称 */
+}
+
+.connect-switch-btn {
+  width: 260px;
+  height: 100%;
+  border-radius: 16px;
+  display: flex;
+  justify-content: flex-end;
+  padding: 0;
+  transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+  overflow: hidden;
+  background-color: transparent !important;
+  border-color: transparent !important;
+}
+
+.connect-switch-btn-inner {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  flex-direction: row;
+  justify-content: space-between;
+}
+
+.status-hover-text {
+  position: absolute;
+  display: flex;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-weight: 600;
+  font-size: 16px;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.status-indicators {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  transition: all 0.3s ease;
+  opacity: 1; /* 默认显示 */
+  transform: scale(1); /* 默认大小 */
+}
+
+/* Primary (启动) 悬浮 */
+.connect-switch-btn.el-button--success:hover {
+  background: rgba(103, 194, 58, 0.1) !important;
+  border: 2px solid rgba(103, 194, 58, 0.2) !important;
+  color: #67c23a !important;
+}
+
+/* Danger (停止) 悬浮 */
+.connect-switch-btn.el-button--danger:hover {
+  background: rgba(245, 108, 108, 0.1) !important;
+  border: 2px solid rgba(245, 108, 108, 0.2) !important;
+  color: #f56c6c !important;
+}
+
+/* 2. 悬浮时：隐藏指示灯 */
+.connect-switch-btn:hover .status-indicators {
+  opacity: 0.05;
+}
+
+/* 3. 悬浮时：显示文字 */
+.connect-switch-btn:hover .status-hover-text {
+  opacity: 1;
 }
 
 .status-block {
@@ -1354,6 +1529,42 @@ watch([roscoreStatus, rosbridgeStatus], ([nR, nB], [oR, oB]) => {
 .add-btn-slide:hover {
   background: rgba(103, 194, 58, 0.1);
   transform: scale(1.02);
+}
+
+/* ============================================
+   View Transition Animations
+   ============================================ */
+.view-fade-enter-active,
+.view-fade-leave-active {
+  transition: all 0.5s cubic-bezier(0.25, 0.8, 0.25, 1);
+  /* [关键] 让正在动画的元素脱离文档流，浮在上方，防止布局挤压 */
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 1; /* 确保在下层内容之上 */
+  background-color: var(--bg-color); /* 防止透明底导致内容透视 */
+}
+
+/* 2. 进入状态 */
+.view-fade-enter-from {
+  opacity: 0;
+  transform: scale(0.96); /* 稍微缩小一点入场 */
+}
+
+/* 3. 离开状态 */
+.view-fade-leave-to {
+  opacity: 0;
+  transform: scale(1.04); /* 稍微放大一点离场 */
+}
+
+/* [新增] 正常状态下的组件样式 */
+/* 当动画结束后，position: absolute 会被移除，这里确保它们在正常流中也是满屏 */
+.view-wrapper > *:not(.view-fade-enter-active):not(.view-fade-leave-active) {
+  width: 100%;
+  height: 100%;
+  position: relative; /* 恢复相对定位 */
 }
 </style>
 

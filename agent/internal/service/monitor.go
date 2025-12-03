@@ -4,7 +4,11 @@ import (
 	"encoding/json"
 	"log"
 	"math"
+	"os"
+	"os/exec"
 	"ros-ground-control/agent/internal/connect"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/shirou/gopsutil/v3/cpu"
@@ -17,6 +21,7 @@ import (
 // SystemStats 定义发送给前端的数据结构
 type SystemStats struct {
 	CPUUsage    float64 `json:"cpu_usage"`   // CPU 总使用率 %
+	GPUUsage    float64 `json:"gpu_usage"`   // GPU 使用率 %
 	MemUsage    float64 `json:"mem_usage"`   // 内存使用率 %
 	MemUsed     uint64  `json:"mem_used"`    // 已用内存 (Bytes)
 	MemTotal    uint64  `json:"mem_total"`   // 总内存 (Bytes)
@@ -66,6 +71,40 @@ func (sm *SystemMonitor) StartMonitor() {
 	}()
 
 	log.Println("[Monitor] Hardware resource monitor started.")
+}
+
+// getGPUUsage 尝试获取 GPU 使用率
+func (sm *SystemMonitor) getGPUUsage() float64 {
+	// 策略 1: 尝试读取 Jetson 的系统文件 (速度最快，针对嵌入式)
+	// Jetson 的 load 文件内容通常是 0-1000 的整数，表示千分比
+	content, err := os.ReadFile("/sys/devices/gpu.0/load")
+	if err == nil {
+		str := strings.TrimSpace(string(content))
+		val, err := strconv.ParseFloat(str, 64)
+		if err == nil {
+			return val / 10.0 // 转换为百分比 (0-100)
+		}
+	}
+
+	// 策略 2: 尝试执行 nvidia-smi (针对工控机/PC)
+	// 命令: nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits
+	// 输出示例: "45"
+	cmd := exec.Command("nvidia-smi", "--query-gpu=utilization.gpu", "--format=csv,noheader,nounits")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		str := strings.TrimSpace(string(out))
+		// 可能有多块显卡，输出类似 "45\n10"，我们只取第一块
+		lines := strings.Split(str, "\n")
+		if len(lines) > 0 {
+			val, err := strconv.ParseFloat(lines[0], 64)
+			if err == nil {
+				return val
+			}
+		}
+	}
+
+	// 如果都不是 NVIDIA 或读取失败，返回 0
+	return 0.0
 }
 
 func (sm *SystemMonitor) collect() SystemStats {
@@ -137,6 +176,9 @@ func (sm *SystemMonitor) collect() SystemStats {
 		}
 		stats.Temperature = maxTemp
 	}
+
+	// 7. GPU
+	stats.GPUUsage = sm.getGPUUsage()
 
 	return stats
 }

@@ -24,6 +24,33 @@ export const useRobotStore = defineStore('robot', () => {
 
   // 剪贴板结构: { sourceId, path, mode: 'copy'|'cut', name, isDir }
   const clipboard = ref(null)
+  const hostSystemState = reactive({
+    info: {
+      hostname: 'Loading...', // 初始占位符
+      platform: '',
+      arch: '',
+      cpuModel: '',
+      cpuCores: 0,
+      cpuSpeed: 0,
+      totalmem: 0,
+      freemem: 0,
+      uptime: 0,
+      networks: []
+    },
+    cpuUsage: 0
+  })
+  const updateHostSystemState = async () => {
+    try {
+      // 调用 IPC
+      const data = await window.api.getHostInfo()
+      // 更新 State
+      // 注意：这里要做深度合并或者属性赋值，保持响应性
+      Object.assign(hostSystemState.info, data)
+      hostSystemState.cpuUsage = data.cpuUsage || 0
+    } catch (e) {
+      console.error('[Store] Failed to update host info:', e)
+    }
+  }
 
   // === Getters ===
   const activeClient = computed(() => (activeID.value ? clients[activeID.value] : null))
@@ -1156,6 +1183,8 @@ export const useRobotStore = defineStore('robot', () => {
     activeClient,
     sudoPassword,
     clipboard,
+    hostSystemState,
+    updateHostSystemState,
     setClipboard,
     setSudoPassword,
 

@@ -278,7 +278,7 @@ function closeDialog() {
 const applyAndClose = async () => {
   // 表单验证
   if (form.mode === 'remote') {
-    if (!form.host) {
+    if (!form.ip) {
       return
     }
   }
@@ -290,12 +290,12 @@ const applyAndClose = async () => {
     id: props.initialData?.id || null,
 
     // 强制规范 IP 和 Mode
-    ip: form.mode === 'local' ? '127.0.0.1' : form.host,
+    ip: form.mode === 'local' ? '127.0.0.1' : form.ip,
     port: form.port || 8080,
     mode: form.mode, // [关键] 显式保存 mode 字段
 
     // 智能名称处理
-    name: form.name || (form.mode === 'local' ? 'Localhost' : form.host),
+    name: form.name || (form.mode === 'local' ? 'Localhost' : form.ip),
     hostname: form.mode === 'local' ? 'localhost' : '' // 辅助字段
   }
 
