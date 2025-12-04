@@ -29,7 +29,8 @@ export function useLanScan() {
       const deviceItem = {
         ...service,
         hostname: displayHostname,
-        ip: service.ip || service.addresses?.find((a) => a.includes('.'))
+        ip: service.ip || service.addresses?.find((a) => a.includes('.')),
+        port: service.port
       }
 
       // 仅当有有效 IP 时才处理
@@ -40,7 +41,7 @@ export function useLanScan() {
         if (incomingId && d.txt?.id) {
           return d.txt.id === incomingId
         }
-        return d.ip === deviceItem.ip
+        return d.ip === deviceItem.ip && d.port === deviceItem.port
       })
 
       if (existsIndex !== -1) {

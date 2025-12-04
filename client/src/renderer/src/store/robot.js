@@ -144,11 +144,11 @@ export const useRobotStore = defineStore('robot', () => {
   // 握手逻辑 (WebSocket Auth)
   const handshakeAndConnect = (ip, port) => {
     return new Promise((resolve, reject) => {
+      const targetPort = port || 8080
       const wsUrl = `ws://${ip}:${port}/ws/logs`
       console.log(`[Connect] Initiating handshake: ${wsUrl}`)
 
       const ws = new WebSocket(wsUrl)
-      let hasAuth = false
       // 状态标志位：防止 timeout 和 onmessage/onclose 竞态
       let isFinished = false
       let handshakeTimeout = null
@@ -181,7 +181,7 @@ export const useRobotStore = defineStore('robot', () => {
             const token = msg.data
 
             // 创建 API
-            const api = createApi(`http://${ip}:${port}/api`, {
+            const api = createApi(`http://${ip}:${targetPort}/api`, {
               getToken: () => token,
               getSudoPassword: () => sudoPassword.value,
               setSudoPassword: (p) => (sudoPassword.value = p),
@@ -244,11 +244,16 @@ export const useRobotStore = defineStore('robot', () => {
   const addConnection = async (settings) => {
     let currentKey = settings.id || settings.ip
     const targetIp = settings.ip
-    const port = settings.port || 8080
+    const targetPort = settings.port || 8080
 
     if (!clients[currentKey]) clients[currentKey] = createClientObject(settings)
     const client = clients[currentKey]
     client.status = 'setting_up'
+
+    // 如果是复用现有对象，更新一下 port (如果是手动输入的)
+    if (clients[currentKey]) {
+      clients[currentKey].port = targetPort
+    }
 
     // 清理旧资源
     if (client.logWs) client.logWs.close()
@@ -259,19 +264,22 @@ export const useRobotStore = defineStore('robot', () => {
 
     let finalRes = undefined
     let finalIp = targetIp
+    let finalPort = targetPort
 
     try {
       // 1. 尝试直连
       try {
-        finalRes = await handshakeAndConnect(targetIp, port)
+        finalRes = await handshakeAndConnect(targetIp, targetPort)
       } catch (e) {
         // 2. 尝试 mDNS 找回
         if (settings.hostname) {
           console.log(`[Connect] Retry with mDNS: ${settings.hostname}`)
           const discovery = await findNewIpByHostname(settings.hostname)
           if (discovery && discovery.ip) {
-            finalRes = await handshakeAndConnect(discovery.ip, port)
+            console.log(`[Connect] mDNS resolved: ${discovery.ip}:${discovery.port}`)
+            finalRes = await handshakeAndConnect(discovery.ip, discovery.port)
             finalIp = discovery.ip
+            finalPort = discovery.port // 更新端口变量
             client.ipChanged = true
           } else {
             throw e
@@ -293,6 +301,7 @@ export const useRobotStore = defineStore('robot', () => {
       client.token = finalRes.token
       client.logWs = finalRes.ws
       client.ip = finalIp
+      client.port = finalPort
       client.id = realId
       client.sysInfo = sysInfo
       client.status = 'ready'
@@ -313,6 +322,7 @@ export const useRobotStore = defineStore('robot', () => {
             token: client.token,
             logWs: client.logWs,
             ip: client.ip,
+            port: finalPort,
             status: 'ready',
             sysInfo: sysInfo,
             ipChanged: client.ipChanged
@@ -459,6 +469,7 @@ export const useRobotStore = defineStore('robot', () => {
         const { ws, token, api } = await handshakeAndConnect(res.ip, client.port)
         if (client.logWs) client.logWs.close()
         client.ip = res.ip
+        client.port = res.port
         client.api = api
         client.token = token
         client.logWs = ws
@@ -486,7 +497,7 @@ export const useRobotStore = defineStore('robot', () => {
         const h = service.txt?.hostname || service.host || ''
         if (h.toLowerCase().replace('.local', '') === cleanTarget) {
           const ip = service.addresses?.find((a) => a.includes('.'))
-          if (ip) result = { ip, id: service.txt?.id }
+          if (ip) result = { ip, id: service.txt?.id, port: service.port }
         }
       }
       try {

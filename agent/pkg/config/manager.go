@@ -18,6 +18,7 @@ type AgentConfig struct {
 	// 如果为空或 "auto"，则使用自动探测
 	NetworkInterface string `json:"network_interface"`
 	CompressorPollMs int    `json:"compressor_poll_ms"`
+	Port             int    `json:"port"`
 }
 
 var (
@@ -55,6 +56,7 @@ func LoadConfig() error {
 		NetworkInterface: "auto",
 		CompressorPollMs: 5000,
 		AgentID:          "", // 先置空
+		Port:             0,  // 默认自动选择
 	}
 	// 2. 尝试读取并解析文件 (如果文件存在)
 	// 我们先读文件，这样能获取到 network_interface 等其他用户配置

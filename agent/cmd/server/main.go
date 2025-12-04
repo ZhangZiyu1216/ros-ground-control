@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -79,6 +80,57 @@ WantedBy=multi-user.target
 	fmt.Println("[Install] ✅ Success! Agent is running.")
 }
 
+// 获取单例锁
+// 返回值: unlock 函数 (用于退出时释放), error
+func acquireInstanceLock() (func(), error) {
+	// 修改路径：使用系统临时目录，实现跨用户互斥
+	// 也就是 /tmp/ros-ground-control.lock
+	lockPath := filepath.Join(os.TempDir(), "ros-ground-control.lock")
+
+	// 1. 尝试打开文件
+	// 使用 O_RDWR (读写) 模式，这是 Flock 所需的
+	// 使用 0666 权限尝试创建 (rw-rw-rw-)，这样不同用户之间理论上可以互相 check 锁
+	// 但受限于 umask，实际创建出来的可能是 644 或 664
+	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0666)
+
+	if err != nil {
+		// 情况 A: 另一个用户已经创建了该文件，且当前用户没有写权限
+		// 比如 User A (root) 创建了锁，User B (ubuntu) 尝试打开
+		if os.IsPermission(err) {
+			return nil, fmt.Errorf("another instance is running (owned by another user)")
+		}
+		return nil, fmt.Errorf("failed to open lock file: %v", err)
+	}
+
+	// 尝试修改权限，确保其他用户也能打开它以便检查锁状态
+	// 这一步可能会失败（如果文件不是我创建的），忽略错误
+	os.Chmod(lockPath, 0666)
+
+	// 2. 尝试获取独占锁
+	err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+	if err != nil {
+		file.Close()
+		// 情况 B: 同一个用户启动了两个实例
+		if err == syscall.EWOULDBLOCK {
+			return nil, fmt.Errorf("another instance is running (locked)")
+		}
+		return nil, fmt.Errorf("flock failed: %v", err)
+	}
+
+	// 3. 写入 PID
+	file.Truncate(0)
+	file.WriteString(fmt.Sprintf("%d", os.Getpid()))
+
+	unlock := func() {
+		syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+		file.Close()
+		// 注意：公共目录下的锁文件最好不要删除
+		// 因为删除操作可能存在竞态条件，且如果其他用户正在等待锁，删除会导致诡异行为
+		// 留在 /tmp 下让系统自动清理即可
+	}
+	return unlock, nil
+}
+
 func main() {
 	// 定义命令行参数
 	installFlag := flag.Bool("install", false, "Install systemd service and enable auto-start")
@@ -89,6 +141,16 @@ func main() {
 		installService()
 		return // 安装完直接退出
 	}
+
+	// 检查单例锁
+	// 注意：必须在 LoadConfig 之前或之后立即执行，要在启动任何服务之前
+	unlock, err := acquireInstanceLock()
+	if err != nil {
+		// 打印红色错误信息并退出
+		log.Fatalf("\n\n[ERROR] Start Failed: %v\nRun 'systemctl status ros-agent' to check if daemon is active.\n\n", err)
+	}
+	// 程序退出时解锁
+	defer unlock()
 
 	log.Println("Starting ROS Ground Control Agent...")
 	// 加载配置
@@ -102,22 +164,38 @@ func main() {
 		log.Fatalf("Failed to init file watcher: %v", err)
 	}
 
+	// 1. 启动 mDNS 服务 (让 Client 能发现我们)
+	cfg := config.GetConfig()
+
+	// 1. 创建监听器 (Listener)
+	// 如果 cfg.Port 是 0，系统会自动分配一个空闲端口
+	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", cfg.Port))
+	if err != nil {
+		log.Fatalf("Failed to listen on port %d: %v", cfg.Port, err)
+	}
+
+	// 2. 获取实际分配的端口
+	// 这一步对于 Port=0 至关重要
+	realPort := listener.Addr().(*net.TCPAddr).Port
+	log.Printf("[Agent] Listening on port: %d", realPort)
+
+	// 3. 获取 Hostname
 	hostname, err := os.Hostname()
 	if err != nil {
-		log.Printf("Warning: Could not get hostname: %v. Using default 'ros-agent'", err)
 		hostname = "ros-agent"
 	}
 	log.Printf("[Agent] Detected hostname: %s", hostname)
 
-	// 1. 启动 mDNS 服务 (让 Client 能发现我们)
-	cfg := config.GetConfig()
+	// 4. 获取 IP
 	preferredIP := utils.GetOutboundIP(cfg.NetworkInterface)
-	log.Printf("[Agent] Detected hostname: %s, Preferred IP: %s", hostname, preferredIP)
 
-	if err := connect.StartMDNS(hostname, 8080, cfg.AgentID, preferredIP); err != nil {
+	log.Printf("[Agent] Discovery: %s @ %s:%d", hostname, preferredIP, realPort)
+
+	// 5. 启动 mDNS (传入 真实端口 realPort)
+	// 这样前端扫描到的 Service 就会包含正确的动态端口
+	if err := connect.StartMDNS(hostname, realPort, cfg.AgentID, preferredIP); err != nil {
 		log.Printf("Failed to start mDNS: %v", err)
 	}
-	// 退出时清理
 	defer connect.Shutdown()
 
 	// 启动 WebSocket Hub 广播循环
@@ -135,7 +213,7 @@ func main() {
 
 	// 3. 启动 Web Server (在一个 Goroutine 中运行，防止阻塞)
 	go func() {
-		if err := r.Run(":8080"); err != nil {
+		if err := r.RunListener(listener); err != nil {
 			log.Fatalf("Server startup failed: %v", err)
 		}
 	}()

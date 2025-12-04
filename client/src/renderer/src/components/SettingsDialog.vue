@@ -189,26 +189,24 @@ const handleReset = () => {
    1. 变量定义
    ============================================ */
 .settings-container {
-  /* Light Mode */
-  --c-bg: #ffffff;
-  --c-card-bg: #f5f7fa;
-  --c-card-border: #e4e7ed;
-  --c-text-main: #303133;
-  --c-text-sub: #909399;
-  --c-divider: #e4e7ed;
+  /* [核心修改] 不再硬编码颜色，而是引用 App.vue 定义的全局变量 */
+  /* 这样当 html.dark 变化导致全局变量变化时，这里会自动同步 */
+
+  --c-bg: var(--bg-color); /* 全局背景 */
+  --c-card-bg: var(--panel-bg-color); /* 玻璃面板背景 */
+  --c-card-border: var(--panel-border-color); /* 玻璃边框 */
+  --c-text-main: var(--text-primary); /* 主文字 */
+  --c-text-sub: var(--text-secondary); /* 次文字 */
+  --c-divider: var(--divider-color); /* 分割线 */
+
+  /* 危险区域颜色 (全局未定义，需单独处理) */
   --c-danger-bg: #fef0f0;
   --c-danger-border: #fde2e2;
   --c-danger-text: #f56c6c;
 }
 
+/* 危险区域的深色模式适配 (手动指定) */
 :global(html.dark) .settings-container {
-  /* Dark Mode */
-  --c-bg: #1e1e20;
-  --c-card-bg: #2b2b2d;
-  --c-card-border: #414243;
-  --c-text-main: #e5eaf3;
-  --c-text-sub: #a3a6ad;
-  --c-divider: #414243;
   --c-danger-bg: rgba(245, 108, 108, 0.1);
   --c-danger-border: rgba(245, 108, 108, 0.2);
   --c-danger-text: #f78989;
@@ -216,6 +214,8 @@ const handleReset = () => {
 
 .settings-container {
   padding: 0 5px;
+  /* 确保文字颜色继承正确 */
+  color: var(--c-text-main);
 }
 
 /* ============================================
@@ -240,7 +240,7 @@ const handleReset = () => {
    3. 设置卡片 (Card)
    ============================================ */
 .setting-card {
-  background-color: var(--c-card-bg);
+  color: var(--c-card-bg) !important;
   border: 1px solid var(--c-card-border);
   border-radius: 8px;
   overflow: hidden;
@@ -270,13 +270,13 @@ const handleReset = () => {
 .item-label {
   font-size: 14px;
   font-weight: 500;
-  color: var(--c-text-main);
+  color: var(--c-text-main) !important;
 }
 .item-label.warning-text {
-  color: #e6a23c;
+  color: #e6a23c !important;
 }
 .item-label.danger-text {
-  color: var(--c-danger-text);
+  color: #f78989 !important;
 }
 
 .item-desc {

@@ -149,7 +149,10 @@
                     <div class="card-header">
                       <div class="header-left">
                         <div class="status-indicator" :class="agent.status"></div>
-                        <span class="agent-name">{{ agent.name }}</span>
+                        <div class="id-text-group">
+                          <span class="agent-name">{{ agent.name }}</span>
+                          <span class="agent-address">{{ agent.ip }}:{{ agent.port }}</span>
+                        </div>
                       </div>
 
                       <!-- [需求1] ROS 状态胶囊 + 删除按钮 -->
@@ -553,6 +556,8 @@ const allAgents = computed(() => {
       return {
         ...activeClient,
         name: item.name,
+        ip: item.settings.ip,
+        port: item.settings.port || 8080,
         uniqueKey: activeClient.id,
         status: activeClient.status,
         settings: item.settings,
@@ -568,6 +573,7 @@ const allAgents = computed(() => {
       return {
         id: item.settings.id,
         ip: item.settings.ip,
+        port: item.settings.port || 8080,
         name: item.name,
         status: 'disconnected',
         uniqueKey: item.settings.ip,
@@ -1151,7 +1157,8 @@ onUnmounted(() => {
 
 /* Front Header */
 .card-header {
-  padding: 8px 8px 8px 15px;
+  padding: 10px 8px 8px 15px;
+  height: 32px;
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -1163,6 +1170,24 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
   overflow: hidden;
+  max-width: 80%;
+}
+.id-text-group {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  overflow: hidden;
+  line-height: 1.2;
+  gap: 2px;
+}
+.agent-address {
+  font-size: 10px;
+  color: var(--text-secondary);
+  font-family: 'Consolas', monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0.8;
 }
 .agent-name {
   font-weight: 700;

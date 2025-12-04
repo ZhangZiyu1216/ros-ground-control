@@ -51,7 +51,7 @@
         </template>
 
         <el-autocomplete
-          v-model="form.ip"
+          v-model="form.host"
           :fetch-suggestions="querySearch"
           placeholder="例如: 192.168.1.10"
           style="width: 100%"
@@ -182,7 +182,7 @@ const { sshDevices, start, stop } = useSshScan()
 // 2. 表单数据
 const formRef = ref(null)
 const form = reactive({
-  ip: '',
+  host: '',
   port: 22,
   username: '',
   password: '',
@@ -224,7 +224,7 @@ const querySearch = (queryString, cb) => {
 }
 
 const handleSelect = (item) => {
-  form.ip = item.value
+  form.host = item.value
 }
 
 // 6. 提交部署
