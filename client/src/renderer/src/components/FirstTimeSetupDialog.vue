@@ -137,18 +137,33 @@
     </el-form>
 
     <template #footer>
-      <div class="dialog-actions">
-        <el-button class="action-btn cancel" :disabled="isDeploying" @click="visible = false"
-          >取消</el-button
+      <div class="dialog-footer-row">
+        <!-- [新增] 左侧卸载按钮 -->
+        <el-popconfirm
+          title="确定要从目标机器卸载 Agent 吗？这将停止服务并删除相关文件。"
+          confirm-button-text="确认卸载"
+          cancel-button-text="取消"
+          confirm-button-type="danger"
+          width="260"
+          @confirm="handleUninstall"
         >
-        <el-button
-          class="action-btn confirm"
-          type="primary"
-          :loading="isDeploying"
-          @click="handleDeploy"
-        >
-          连接并部署
-        </el-button>
+          <template #reference>
+            <el-button type="danger" link :disabled="isDeploying">卸载 Agent</el-button>
+          </template>
+        </el-popconfirm>
+        <div class="dialog-actions">
+          <el-button class="action-btn cancel" :disabled="isDeploying" @click="visible = false"
+            >取消</el-button
+          >
+          <el-button
+            class="action-btn confirm"
+            type="primary"
+            :loading="isDeploying"
+            @click="handleDeploy"
+          >
+            连接并部署
+          </el-button>
+        </div>
       </div>
     </template>
 
@@ -169,6 +184,7 @@
 import { ref, reactive, computed, watch, toRaw, onMounted } from 'vue'
 import { useSshScan } from '../composables/useSshScan'
 import { InfoFilled, Search, Platform, User, Key, Cpu, Download } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
 
 const props = defineProps({
   modelValue: Boolean,
@@ -189,7 +205,9 @@ const form = reactive({
   arch: 'arm64',
   installFoxglove: true
 })
+const localIsBusy = ref(false)
 const progress = reactive({ percent: 0, message: '准备中...' })
+const isDeploying = computed(() => props.isDeploying || localIsBusy.value)
 
 // 3. 显隐控制
 const visible = computed({
@@ -239,7 +257,43 @@ const handleDeploy = () => {
   })
 }
 
-// 7. 监听进度 (从 Preload 接收)
+// 7. 卸载动作 (内部处理)
+const handleUninstall = async () => {
+  // 校验表单 (至少需要 IP, Port, User, Pass)
+  const isValid = await formRef.value.validate().catch(() => false)
+  if (!isValid) return
+
+  localIsBusy.value = true
+  progress.percent = 0
+  progress.message = '正在初始化卸载...'
+  progress.status = ''
+
+  try {
+    const result = await window.api.uninstallAgent(toRaw(form))
+
+    if (result.success) {
+      progress.percent = 100
+      progress.message = '卸载成功'
+      progress.status = 'success'
+      ElMessage.success('Agent 已成功卸载')
+      setTimeout(() => {
+        localIsBusy.value = false
+        visible.value = false
+      }, 1500)
+    } else {
+      throw new Error(result.message)
+    }
+  } catch (e) {
+    progress.status = 'exception'
+    progress.message = '卸载失败: ' + e.message
+    ElMessage.error(e.message)
+    setTimeout(() => {
+      localIsBusy.value = false
+    }, 3000)
+  }
+}
+
+// 8. 监听进度 (从 Preload 接收)
 onMounted(() => {
   if (window.api && window.api.onDeployProgress) {
     window.api.onDeployProgress((data) => {
@@ -525,6 +579,34 @@ onMounted(() => {
 }
 
 /* Footer */
+/* [新增] 底部布局样式 */
+.dialog-footer-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.progress-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(255, 255, 255, 0.9);
+  z-index: 10;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+.progress-content {
+  text-align: center;
+  width: 200px;
+}
+.progress-text {
+  margin-top: 15px;
+  color: #606266;
+  font-size: 14px;
+}
 .dialog-actions {
   display: flex;
   justify-content: flex-end;

@@ -2,6 +2,7 @@
   <div class="overview-container">
     <!-- Left Column: Host Command Center -->
     <div class="layout-col left-col">
+      <!-- 1. Host Panel (高度 60%) -->
       <div class="glass-panel host-panel">
         <div class="panel-header">
           <div class="header-title">
@@ -10,80 +11,89 @@
         </div>
 
         <div class="host-content">
-          <!-- [修改] 使用统一的滚动条包裹整个左侧内容 -->
           <el-scrollbar height="100%">
-            <!-- Identity -->
-            <div class="host-identity">
-              <div class="id-row">
-                <h2>{{ hostInfo.hostname }}</h2>
-                <span class="platform-tag">{{ hostInfo.platform }}</span>
+            <!-- Row 1: Identity & System Info -->
+            <div class="host-header-section">
+              <!-- Left: Hostname -->
+              <div class="hh-left">
+                <h2 :title="hostInfo.hostname">{{ hostInfo.hostname }}</h2>
               </div>
-              <div class="uptime-row">
-                <el-icon><Timer /></el-icon> Uptime: {{ formatUptime(hostInfo.uptime) }}
+
+              <!-- Right: Meta Info (Stacked) -->
+              <div class="hh-right">
+                <span class="platform-tag">{{ hostInfo.platform || 'Unknown' }}</span>
+                <span class="uptime-tag">
+                  <el-icon><Timer /></el-icon> {{ formatUptime(hostInfo.uptime) }}
+                </span>
               </div>
             </div>
 
             <div class="divider"></div>
 
-            <!-- Circular Metrics -->
-            <div class="compact-metrics">
-              <div class="c-metric">
-                <el-progress
-                  class="enhanced-progress"
-                  type="dashboard"
-                  :percentage="hostCpuUsage"
-                  :width="90"
-                  :stroke-width="8"
-                  :color="colors.cpu"
-                >
-                  <template #default="{ percentage }"
-                    ><span class="cm-val">{{ percentage }}%</span></template
+            <!-- Row 2: Metrics & Specs (Split Column) -->
+            <div class="performance-section">
+              <!-- Left Col: Usage Rings (Vertical) -->
+              <div class="perf-rings">
+                <!-- CPU Ring -->
+                <div class="ring-box">
+                  <el-progress
+                    class="enhanced-progress"
+                    type="dashboard"
+                    :percentage="hostCpuUsage"
+                    :width="40"
+                    :stroke-width="5"
+                    :color="colors.cpu"
                   >
-                </el-progress>
-                <span class="cm-label">CPU Load</span>
-              </div>
-              <div class="c-metric">
-                <el-progress
-                  class="enhanced-progress"
-                  type="dashboard"
-                  :percentage="hostMemUsage"
-                  :width="90"
-                  :stroke-width="8"
-                  :color="colors.mem"
-                >
-                  <template #default="{ percentage }"
-                    ><span class="cm-val">{{ percentage }}%</span></template
+                    <template #default="{ percentage }">
+                      <span class="ring-val">{{ percentage }}%</span>
+                    </template>
+                  </el-progress>
+                  <span class="ring-label">CPU</span>
+                </div>
+                <!-- RAM Ring -->
+                <div class="ring-box">
+                  <el-progress
+                    class="enhanced-progress"
+                    type="dashboard"
+                    :percentage="hostMemUsage"
+                    :width="40"
+                    :stroke-width="5"
+                    :color="colors.mem"
                   >
-                </el-progress>
-                <span class="cm-label">RAM Usage</span>
+                    <template #default="{ percentage }">
+                      <span class="ring-val">{{ percentage }}%</span>
+                    </template>
+                  </el-progress>
+                  <span class="ring-label">RAM</span>
+                </div>
               </div>
-            </div>
 
-            <!-- Specs Grid -->
-            <div class="spec-grid">
-              <div class="spec-cell full">
-                <label>CPU Model</label>
-                <span :title="hostInfo.cpuModel">{{ hostInfo.cpuModel }}</span>
-              </div>
-              <div class="spec-cell half">
-                <label>Threads</label>
-                <span>{{ hostInfo.cpuCores || '-' }}</span>
-              </div>
-              <div class="spec-cell half">
-                <label>Frequency</label>
-                <span>{{ (hostInfo.cpuSpeed / 1000).toFixed(2) }} GHz</span>
-              </div>
-              <div class="spec-cell full">
-                <label>Total Memory</label>
-                <span>{{ formatBytes(hostInfo.totalmem) }}</span>
+              <!-- Right Col: Hardware Specs (Grid) -->
+              <div class="perf-specs">
+                <div class="spec-item full-width">
+                  <label>CPU型号</label>
+                  <span :title="hostInfo.cpuModel">{{ hostInfo.cpuModel }}</span>
+                </div>
+                <div class="spec-item">
+                  <label>核心数</label>
+                  <span>{{ hostInfo.cpuCores }} Threads</span>
+                </div>
+                <div class="spec-item">
+                  <label>频率</label>
+                  <span>{{ (hostInfo.cpuSpeed / 1000).toFixed(2) }} GHz</span>
+                </div>
+                <div class="spec-item full-width">
+                  <label>总内存</label>
+                  <span>{{ formatBytes(hostInfo.totalmem) }}</span>
+                </div>
               </div>
             </div>
 
             <div class="divider"></div>
 
-            <!-- Network (移除内部滚动条，改为自然流) -->
+            <!-- Row 3: Network Interfaces (2 Cols) -->
             <div class="net-section">
-              <div class="section-sub-title">NETWORK INTERFACES</div>
+              <div class="section-sub-title">网卡列表</div>
               <div class="net-list">
                 <div v-for="net in hostInfo.networks" :key="net.ip" class="net-interface">
                   <div class="iface-icon">
@@ -105,7 +115,71 @@
         </div>
 
         <div class="panel-watermark">
-          <el-icon><Monitor /></el-icon> Client
+          <el-icon><Monitor /></el-icon> CLIENT
+        </div>
+      </div>
+
+      <!-- 2. Cluster Control Panel (高度 40%) -->
+      <div class="glass-panel cluster-panel">
+        <div class="panel-header">
+          <div class="header-title">
+            <el-icon><Operation /></el-icon> 集群指令
+          </div>
+          <el-button
+            type="primary"
+            link
+            size="small"
+            :disabled="connectedAgents.length === 0"
+            @click="openClusterDialog(null)"
+          >
+            <el-icon><Plus /></el-icon>
+          </el-button>
+        </div>
+
+        <div class="cluster-content">
+          <el-scrollbar height="100%">
+            <div v-if="clusterSequences.length === 0" class="empty-cluster">暂无集群序列</div>
+            <div v-else class="cluster-list">
+              <div
+                v-for="seq in clusterSequences"
+                :key="seq.id"
+                class="cluster-item"
+                :class="{ 'is-running': seq._isRunning }"
+              >
+                <div class="c-info">
+                  <span class="c-name">{{ seq.name }}</span>
+                  <span class="c-steps">{{ seq.steps.length }} 步</span>
+                </div>
+                <div class="c-actions">
+                  <el-button
+                    link
+                    :icon="Edit"
+                    size="small"
+                    :disabled="seq._isRunning"
+                    @click="openClusterDialog(seq)"
+                  />
+                  <el-button
+                    link
+                    type="danger"
+                    :icon="Delete"
+                    size="small"
+                    :disabled="seq._isRunning"
+                    @click="deleteClusterSeq(seq.id)"
+                  />
+                  <el-divider direction="vertical" />
+                  <el-button
+                    type="primary"
+                    circle
+                    size="small"
+                    :icon="VideoPlay"
+                    :loading="seq._isRunning"
+                    :disabled="connectedAgents.length === 0"
+                    @click="runClusterSeq(seq)"
+                  />
+                </div>
+              </div>
+            </div>
+          </el-scrollbar>
         </div>
       </div>
     </div>
@@ -364,7 +438,7 @@
                     <div class="split-body">
                       <!-- Left: Nodes -->
                       <div class="split-col border-right">
-                        <div class="col-title">Nodes</div>
+                        <div class="col-title">节点</div>
                         <el-scrollbar>
                           <div class="mini-list">
                             <template v-if="agent.nodes && agent.nodes.length > 0">
@@ -404,14 +478,14 @@
                                 </el-icon>
                               </div>
                             </template>
-                            <div v-else class="mini-empty">No Nodes</div>
+                            <div v-else class="mini-empty">暂无节点</div>
                           </div>
                         </el-scrollbar>
                       </div>
 
                       <!-- Right: Sequences -->
                       <div class="split-col">
-                        <div class="col-title">Sequences</div>
+                        <div class="col-title">序列</div>
                         <el-scrollbar>
                           <div class="mini-list">
                             <template v-if="agent.sequences && agent.sequences.length > 0">
@@ -452,7 +526,7 @@
                                 </el-icon>
                               </div>
                             </template>
-                            <div v-else class="mini-empty">No Sequences</div>
+                            <div v-else class="mini-empty">暂无序列</div>
                           </div>
                         </el-scrollbar>
                       </div>
@@ -495,14 +569,23 @@
         </div>
       </div>
     </div>
+    <ClusterSeqDialog
+      v-model="showClusterDialog"
+      :editing-data="editingClusterSeq"
+      @save="handleClusterSave"
+    />
   </div>
 </template>
 
 <script setup>
-import { onMounted, onUnmounted, computed, reactive } from 'vue'
+import { ref, onMounted, onUnmounted, computed, reactive } from 'vue'
 import {
   Monitor,
   Connection,
+  Operation,
+  Plus,
+  Edit,
+  Delete,
   VideoPlay,
   SwitchButton,
   Loading,
@@ -512,10 +595,9 @@ import {
   Back,
   Timer,
   Iphone,
-  Plus,
-  MagicStick,
-  Delete
+  MagicStick
 } from '@element-plus/icons-vue'
+import ClusterSeqDialog from './ClusterSeqDialog.vue'
 import { useRobotStore } from '../store/robot'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
@@ -588,8 +670,125 @@ const allAgents = computed(() => {
     }
   })
 })
-
+const connectedAgents = computed(() =>
+  Object.values(robotStore.clients).filter((c) => c.status === 'ready')
+)
 const activeCount = computed(() => allAgents.value.filter((a) => a.status === 'ready').length)
+
+// ------------------- 集群序列逻辑 (新增) -------------------
+const CLUSTER_CONFIG_KEY = 'cluster_sequences'
+const clusterSequences = ref([])
+const showClusterDialog = ref(false)
+const editingClusterSeq = ref(null)
+
+// 加载
+const loadClusterSequences = async () => {
+  const saved = await window.api.getConfig(CLUSTER_CONFIG_KEY)
+  if (Array.isArray(saved)) {
+    // 增加运行时状态字段
+    clusterSequences.value = saved.map((s) => ({ ...s, _isRunning: false }))
+  }
+}
+
+// 打开对话框
+const openClusterDialog = (seq) => {
+  if (connectedAgents.value.length === 0) {
+    return ElMessage.warning('没有在线机器人，无法编辑序列')
+  }
+  editingClusterSeq.value = seq
+  showClusterDialog.value = true
+}
+
+// 保存
+const handleClusterSave = async (data) => {
+  // 更新本地列表
+  const idx = clusterSequences.value.findIndex((s) => s.id === data.id)
+  if (idx !== -1) {
+    clusterSequences.value[idx] = { ...data, _isRunning: false }
+  } else {
+    clusterSequences.value.push({ ...data, _isRunning: false })
+  }
+
+  // 持久化 (去除 _isRunning)
+  const toSave = clusterSequences.value.map(({ ...rest }) => rest)
+  await window.api.setConfig(CLUSTER_CONFIG_KEY, JSON.parse(JSON.stringify(toSave)))
+  ElMessage.success('集群序列已保存')
+}
+
+// 删除
+const deleteClusterSeq = async (id) => {
+  try {
+    await ElMessageBox.confirm('确定删除此序列?', '提示', { type: 'warning' })
+    clusterSequences.value = clusterSequences.value.filter((s) => s.id !== id)
+    const toSave = clusterSequences.value.map(({ ...rest }) => rest)
+    await window.api.setConfig(CLUSTER_CONFIG_KEY, JSON.parse(JSON.stringify(toSave)))
+  } catch {
+    /*no use */
+  }
+}
+
+// [核心] 执行集群序列
+const runClusterSeq = async (seq) => {
+  if (seq._isRunning) return
+  seq._isRunning = true
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+  try {
+    for (const step of seq.steps) {
+      // 1. 延时
+      if (step.type === 'delay') {
+        await sleep(step.content)
+        continue
+      }
+
+      // 2. 动作
+      if (step.type === 'action') {
+        const agent = robotStore.clients[step.agentId]
+
+        // 检查机器人是否在线
+        if (!agent || agent.status !== 'ready') {
+          console.warn(`Skipping action for offline agent: ${step.agentId}`)
+          continue
+        }
+
+        // [联动] 自动翻面
+        // 只有当卡片没翻面时才翻
+        if (!flippedCards[step.agentId]) {
+          flippedCards[step.agentId] = true
+        }
+
+        // 执行指令
+        if (step.targetType === 'node') {
+          const node = agent.nodes.find((n) => n.id === step.targetId)
+          if (node) {
+            // 不 await，并行启动，或者根据需求 await
+            // eslint-disable-next-line no-unused-vars
+            robotStore.startNodeProcess(step.agentId, node).catch((e) => {
+              ElMessage.error(`${agent.name}: 节点启动失败`)
+            })
+          }
+        } else if (step.targetType === 'sequence') {
+          const subSeq = agent.sequences.find((s) => s.id === step.targetId)
+          if (subSeq) {
+            // eslint-disable-next-line no-unused-vars
+            robotStore.runSequence(step.agentId, subSeq).catch((e) => {
+              ElMessage.error(`${agent.name}: 序列执行失败`)
+            })
+          }
+        }
+
+        // 稍微间隔一下，避免请求风暴
+        await sleep(100)
+      }
+    }
+    ElMessage.success('集群序列指令发送完毕')
+  } catch (e) {
+    ElMessage.error('执行异常: ' + e.message)
+  } finally {
+    seq._isRunning = false
+  }
+}
 
 // ------------------- 工具函数 -------------------
 const formatBytes = (bytes) => {
@@ -750,6 +949,7 @@ onMounted(() => {
   refreshHostStats()
   refreshTimer = setInterval(refreshHostStats, 3000)
   refreshAllAgents()
+  loadClusterSequences()
 })
 
 onUnmounted(() => {
@@ -778,15 +978,25 @@ onUnmounted(() => {
   min-width: 0;
 }
 .left-col {
+  display: flex;
   width: 320px;
   flex-shrink: 0;
+  gap: 8px;
+}
+.host-panel {
+  height: 66% !important;
+  min-height: 0;
+}
+/* 下方面板：Cluster */
+.cluster-panel {
+  flex: 1;
+  min-height: 0;
 }
 .right-col {
   flex: 1;
 }
 
 .glass-panel {
-  flex: 1;
   display: flex;
   flex-direction: column;
   background: var(--panel-bg-color);
@@ -834,67 +1044,291 @@ onUnmounted(() => {
 }
 
 /* ============================================
-   2. Host Panel (Left)
+   2. Host Panel (Left) - Refined Layout
    ============================================ */
 .host-content {
   flex: 1;
-  /* [修改] 隐藏原生滚动条，交给 el-scrollbar */
   overflow: hidden;
-  padding: 0;
   display: flex;
   flex-direction: column;
-  z-index: 1;
-  min-height: 0; /* 允许 Flex 收缩 */
+  background: transparent;
 }
-
-/* [新增] 强制 Scrollbar View 占满高度并使用 Flex 布局 */
-/* 这样可以保证 .net-section 能够通过 flex: 1 自动填满底部剩余空间 */
 .host-content :deep(.el-scrollbar__view) {
   min-height: 100%;
   display: flex;
   flex-direction: column;
 }
 
-.host-identity {
-  padding: 20px;
-}
-.id-row {
+/* --- Row 1: Header Info --- */
+.host-header-section {
+  padding: 15px 20px 10px;
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
-  margin-bottom: 5px;
+  align-items: center; /* 垂直居中 */
+  gap: 15px;
 }
-.host-identity h2 {
+
+/* Left: Name */
+.hh-left {
+  flex: 1; /* 占据剩余空间 */
+  min-width: 0; /* 允许文本截断 */
+  display: flex;
+  align-items: center;
+}
+
+.hh-left h2 {
   margin: 0;
   font-size: 18px;
+  font-weight: 700;
   color: var(--text-primary);
-  word-break: break-all;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   line-height: 1.2;
 }
+
+/* Right: Meta Tags */
+.hh-right {
+  display: flex;
+  flex-direction: column; /* 垂直排列 System 和 Uptime */
+  align-items: flex-end; /* 靠右对齐 */
+  gap: 4px;
+  flex-shrink: 0; /* 防止被压缩 */
+}
+
 .platform-tag {
   font-size: 10px;
   color: #409eff;
   background: rgba(64, 158, 255, 0.1);
-  padding: 2px 6px;
+  padding: 1px 6px;
   border-radius: 4px;
   font-weight: 700;
   text-transform: uppercase;
-  white-space: nowrap;
+  line-height: 1.4;
 }
-.uptime-row {
-  font-size: 12px;
+
+.uptime-tag {
+  font-size: 11px;
   color: var(--text-secondary);
   display: flex;
   align-items: center;
-  gap: 5px;
-}
-.divider {
-  height: 1px;
-  background: var(--divider-color);
-  margin: 5px 20px;
-  opacity: 0.5;
+  gap: 4px;
+  font-family: 'Consolas', monospace; /* 数字部分用等宽字体 */
 }
 
+/* --- Row 2: Performance (Main Section) --- */
+.performance-section {
+  /* [关键] 让这一块占据更多空间，或者有舒适的内边距 */
+  padding: 0px 10px 10px 6px;
+  display: flex;
+  align-items: center; /* 垂直居中对齐 */
+  gap: 10px;
+  flex-shrink: 0; /* 防止被压缩 */
+}
+
+/* 左列：圆环 */
+.perf-rings {
+  display: flex;
+  flex-direction: column; /* 竖排 */
+  gap: 10px;
+  align-items: center;
+  justify-content: center;
+  width: 60px; /* 固定宽度 */
+}
+.ring-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-top: -5px;
+}
+/* 进度条文字调整 */
+.ring-val {
+  font-size: 9px !important;
+  margin-left: -8px;
+  font-weight: 700;
+  color: var(--text-primary);
+  font-family: 'Consolas', monospace;
+}
+.ring-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  margin-bottom: -1px !important;
+}
+.enhanced-progress :deep(path:first-child) {
+  stroke: rgba(128, 128, 128, 0.15); /* 增强底色对比度 */
+}
+
+/* 右列：详细参数 */
+.perf-specs {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr 1fr; /* 两列 */
+  gap: 8px 12px;
+  padding: 4px;
+  border-radius: 8px;
+}
+.spec-item {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.spec-item.full-width {
+  grid-column: 1 / -1;
+} /* 跨两列 */
+
+.spec-item label {
+  font-size: 9px;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  margin-bottom: 2px;
+}
+.spec-item span {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-family: 'Consolas', monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* --- Row 3: Network --- */
+.net-section {
+  flex: 1; /* 填满底部剩余空间 */
+  display: flex;
+  flex-direction: column;
+  background: rgba(128, 128, 128, 0.03);
+  padding: 15px 16px;
+  border-top: 1px solid var(--divider-color);
+}
+.section-sub-title {
+  font-size: 10px;
+  font-weight: 800;
+  color: var(--text-secondary);
+  margin-left: 3px;
+  margin-bottom: 10px;
+  letter-spacing: 1px;
+}
+
+.net-list {
+  display: grid;
+  grid-template-columns: 1fr 1fr; /* [需求] 网卡两列显示 */
+  gap: 8px;
+}
+
+.net-interface {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--card-inner-bg);
+  padding: 6px 6px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+  overflow: hidden;
+}
+.iface-icon {
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  background: rgba(64, 158, 255, 0.1);
+  color: #409eff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+}
+.iface-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.iface-name {
+  font-size: 10px;
+  color: var(--text-secondary);
+  font-weight: 700;
+  text-transform: uppercase;
+}
+.iface-ip {
+  font-size: 11px;
+  color: var(--text-primary);
+  font-family: 'Consolas', monospace;
+  font-weight: 600;
+}
+.active-dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #67c23a;
+  flex-shrink: 0;
+}
+.no-net {
+  grid-column: 1 / -1;
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.cluster-content {
+  flex: 1;
+  overflow: hidden;
+  padding: 10px;
+}
+
+.empty-cluster {
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 12px;
+  margin-top: 20px;
+  opacity: 0.7;
+}
+
+.cluster-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cluster-item {
+  background: rgba(128, 128, 128, 0.05);
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 8px 10px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  transition: all 0.2s;
+}
+.cluster-item:hover {
+  background: rgba(128, 128, 128, 0.1);
+  border-color: rgba(64, 158, 255, 0.3);
+}
+.cluster-item.is-running {
+  border-color: #67c23a;
+  background: rgba(103, 194, 58, 0.05);
+}
+
+.c-info {
+  display: flex;
+  flex-direction: column;
+}
+.c-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.c-steps {
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+
+.c-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
 .compact-metrics {
   display: flex;
   justify-content: space-around;
@@ -949,73 +1383,6 @@ onUnmounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-
-.net-section {
-  /* [修改] 保持 flex: 1，使其在内容较少时自动拉伸填满底部 */
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  background: rgba(128, 128, 128, 0.03);
-  padding: 15px 20px;
-  border-top: 1px solid var(--divider-color);
-  /* 移除之前的 min-height: 0，因为现在是在 scrollbar 内部自然生长 */
-}
-.section-sub-title {
-  font-size: 10px;
-  font-weight: 800;
-  color: var(--text-secondary);
-  margin-bottom: 10px;
-  letter-spacing: 1px;
-}
-.net-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.net-interface {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  background: var(--card-inner-bg);
-  padding: 8px 12px;
-  border-radius: 8px;
-  border: 1px solid transparent;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
-}
-.iface-icon {
-  width: 32px;
-  height: 32px;
-  border-radius: 6px;
-  background: rgba(64, 158, 255, 0.1);
-  color: #409eff;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.iface-info {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-}
-.iface-name {
-  font-size: 11px;
-  color: var(--text-secondary);
-  font-weight: 700;
-  text-transform: uppercase;
-}
-.iface-ip {
-  font-size: 13px;
-  color: var(--text-primary);
-  font-family: 'Consolas', monospace;
-  font-weight: 600;
-}
-.active-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #67c23a;
-  box-shadow: 0 0 4px #67c23a;
-}
 .enhanced-progress :deep(path:first-child) {
   stroke: rgba(0, 0, 0, 0.1) !important; /* 浅色模式下的深轨 */
 }
@@ -1026,6 +1393,9 @@ onUnmounted(() => {
 /* ============================================
    3. Fleet Panel (Right)
    ============================================ */
+.fleet-panel {
+  flex: 1;
+}
 .header-stat {
   display: flex;
   align-items: baseline;
@@ -1584,6 +1954,7 @@ onUnmounted(() => {
   color: var(--text-primary);
   font-weight: 700;
   font-size: 13px;
+  height: 24px;
 }
 .split-body {
   flex: 1;

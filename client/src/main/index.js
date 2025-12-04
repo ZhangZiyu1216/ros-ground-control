@@ -6,7 +6,7 @@ import { Bonjour } from 'bonjour-service'
 import Store from 'electron-store' // 确保安装了 electron-store
 import editorWindowManager from './EditorWindowManager.js'
 import sshDiscovery from './SshDiscovery'
-import { deployAgent } from './AgentDeployer'
+import { deployAgent, uninstallAgent } from './AgentDeployer'
 import icon_png from '../../resources/icon.png?asset'
 import icon_ico from '../../resources/icon.ico?asset'
 
@@ -249,6 +249,11 @@ app.whenReady().then(() => {
   // --- 部署 ---
   ipcMain.handle('deploy-agent', async (event, config) => {
     return await deployAgent(config, event.sender)
+  })
+
+  // [新增] 卸载 IPC
+  ipcMain.handle('uninstall-agent', async (event, config) => {
+    return await uninstallAgent(config, event.sender)
   })
 
   app.on('activate', function () {

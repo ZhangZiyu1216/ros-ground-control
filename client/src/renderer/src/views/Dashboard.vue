@@ -440,6 +440,13 @@
         </div>
       </div>
     </div>
+    <!-- 新的序列编辑器组件 -->
+    <SequenceEditorDialog
+      v-model="isSeqDialogVisible"
+      :nodes="nodes"
+      :initial-data="seqForm.id ? seqForm : null"
+      @save="handleSequenceSave"
+    />
   </div>
   <el-dialog
     v-model="fileBrowserContext.visible"
@@ -464,82 +471,13 @@
       />
     </div>
   </el-dialog>
-  <el-dialog
-    v-model="isSeqDialogVisible"
-    title="编辑启动序列"
-    width="500px"
-    :close-on-click-modal="false"
-    append-to-body
-  >
-    <el-form label-position="top">
-      <el-form-item label="序列名称">
-        <el-input v-model="seqForm.name" placeholder="例如: 全系统启动" />
-      </el-form-item>
-
-      <el-form-item label="执行流程">
-        <div class="timeline-editor">
-          <el-timeline>
-            <el-timeline-item
-              v-for="(step, index) in seqForm.steps"
-              :key="index"
-              :type="step.type === 'node' ? 'primary' : 'warning'"
-              :icon="step.type === 'delay' ? Timer : undefined"
-              hide-timestamp
-            >
-              <div class="step-content">
-                <!-- 节点选择 -->
-                <el-select
-                  v-if="step.type === 'node'"
-                  v-model="step.content"
-                  placeholder="选择节点"
-                  size="small"
-                  style="width: 200px"
-                >
-                  <el-option v-for="n in nodes" :key="n.id" :label="n.name" :value="n.id" />
-                </el-select>
-
-                <!-- 延时输入 -->
-                <div v-else class="delay-input">
-                  <span>等待</span>
-                  <el-input-number
-                    v-model="step.content"
-                    size="small"
-                    :min="100"
-                    :step="500"
-                    controls-position="right"
-                    style="width: 100px"
-                  />
-                  <span>ms</span>
-                </div>
-
-                <!-- 删除步骤 -->
-                <el-button link type="danger" :icon="Remove" @click="removeSeqStep(index)" />
-              </div>
-            </el-timeline-item>
-
-            <!-- 底部添加按钮 -->
-            <el-timeline-item class="add-step-item">
-              <el-button-group size="small">
-                <el-button :icon="Plus" @click="addSeqStep('node')">节点</el-button>
-                <el-button :icon="Timer" @click="addSeqStep('delay')">延时</el-button>
-              </el-button-group>
-            </el-timeline-item>
-          </el-timeline>
-        </div>
-      </el-form-item>
-    </el-form>
-
-    <template #footer>
-      <el-button @click="isSeqDialogVisible = false">取消</el-button>
-      <el-button type="primary" @click="saveSequence">保存</el-button>
-    </template>
-  </el-dialog>
 </template>
 
 <script setup>
 // #region 1. Imports
 import FileBrowser from '../components/FileBrowser.vue'
 import NodeParamsList from '../components/NodeParamsList.vue'
+import SequenceEditorDialog from '../components/SequenceEditorDialog.vue'
 import { ref, reactive, computed, watch, onMounted } from 'vue'
 import { useRobotStore } from '../store/robot'
 import { useFoxglove } from '../composables/useFoxglove.js'
@@ -551,10 +489,7 @@ import {
   VideoPlay,
   VideoPause,
   VideoCamera,
-  Timer,
   CirclePlus,
-  Remove,
-  Plus,
   ArrowRight,
   DArrowRight,
   Folder,
@@ -736,29 +671,11 @@ function openSeqDialog(seq = null) {
   isSeqDialogVisible.value = true
 }
 
-function addSeqStep(type) {
-  if (type === 'node') {
-    const firstNodeId = nodes.value.length > 0 ? nodes.value[0].id : ''
-    seqForm.steps.push({ type: 'node', content: firstNodeId })
-  } else {
-    seqForm.steps.push({ type: 'delay', content: '1000' })
-  }
-}
-
-function removeSeqStep(index) {
-  seqForm.steps.splice(index, 1)
-}
-
-async function saveSequence() {
-  if (!seqForm.name) return ElMessage.warning('请输入序列名称')
-  for (const step of seqForm.steps) {
-    if (step.type === 'node' && !step.content) return ElMessage.warning('请选择具体的节点')
-  }
-
+const handleSequenceSave = async (formData) => {
   const data = {
-    id: seqForm.id || `seq-${Date.now()}`,
-    name: seqForm.name,
-    steps: seqForm.steps,
+    id: formData.id || `seq-${Date.now()}`,
+    name: formData.name,
+    steps: formData.steps,
     _status: 'stopped'
   }
 

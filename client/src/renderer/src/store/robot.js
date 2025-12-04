@@ -357,7 +357,7 @@ export const useRobotStore = defineStore('robot', () => {
       client.status = 'failed'
       broadcastClientState(client) // 失败状态也广播
       if (e.message.includes('繁忙') || e.message.includes('Conflict')) {
-        ElNotification({ title: '连接被拒绝', message: '设备已被占用', type: 'warning' })
+        ElNotification({ title: '连接被拒绝', message: '设备无响应或已被占用', type: 'warning' })
       } else {
         ElNotification({ title: '连接失败', message: e.message, type: 'error' })
       }

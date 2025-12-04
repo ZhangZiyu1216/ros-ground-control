@@ -59,6 +59,7 @@ const api = {
   },
   // 部署
   deployAgent: (config) => ipcRenderer.invoke('deploy-agent', config),
+  uninstallAgent: (config) => ipcRenderer.invoke('uninstall-agent', config),
   onDeployProgress: (callback) => ipcRenderer.on('deploy-progress', (_e, value) => callback(value))
 }
 

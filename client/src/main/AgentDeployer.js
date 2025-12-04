@@ -132,3 +132,52 @@ WantedBy=multi-user.target
     return { success: false, message: error.message }
   }
 }
+
+// [新增] 卸载 Agent
+export async function uninstallAgent(config, sender) {
+  const { host, port, username, password } = config
+  const ssh = new NodeSSH()
+
+  try {
+    reportProgress(sender, 10, `正在连接到 ${host} 以执行卸载...`)
+
+    await ssh.connect({
+      host,
+      port,
+      username,
+      password,
+      readyTimeout: 10000
+    })
+
+    const sudoPrefix = username === 'root' ? '' : `echo '${password}' | sudo -S `
+
+    // 1. 停止并禁用服务
+    reportProgress(sender, 30, '正在停止服务...')
+    // 忽略错误（可能服务本身就不存在或未运行）
+    try {
+      await ssh.execCommand(`${sudoPrefix}systemctl stop ros-agent`)
+      await ssh.execCommand(`${sudoPrefix}systemctl disable ros-agent`)
+    } catch (e) {
+      console.log('Stop service warning:', e)
+    }
+
+    // 2. 删除服务文件
+    reportProgress(sender, 50, '正在清理系统配置...')
+    await ssh.execCommand(`${sudoPrefix}rm -f /etc/systemd/system/ros-agent.service`)
+    await ssh.execCommand(`${sudoPrefix}systemctl daemon-reload`)
+
+    // 3. 删除二进制文件
+    reportProgress(sender, 80, '正在删除程序文件...')
+    await ssh.execCommand(`${sudoPrefix}rm -f /usr/local/bin/ros-ground-control`)
+
+    // 注意：我们不自动卸载依赖包 (foxglove-bridge, avahi 等)，因为这可能会破坏用户的其他环境
+
+    reportProgress(sender, 100, '卸载完成')
+    ssh.dispose()
+    return { success: true }
+  } catch (error) {
+    console.error('[Uninstall] Error:', error)
+    ssh.dispose()
+    return { success: false, message: error.message }
+  }
+}
