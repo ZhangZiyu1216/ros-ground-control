@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"strings"
+
 	"ros-ground-control/agent/internal/service"
 	"ros-ground-control/agent/pkg/config"
 	"ros-ground-control/agent/pkg/utils"
-	"strings"
 
 	"github.com/gin-gonic/gin"
 )
@@ -26,55 +28,112 @@ func RegisterProcRoutes(rg *gin.RouterGroup) {
 			return
 		}
 
-		// 1. 准备 ROS_IP 等关键变量
+		// [Debug] 打印原始请求
+		log.Printf("[Proc-Debug] Received Start: Cmd='%s', Args=%v (len=%d)", req.Cmd, req.Args, len(req.Args))
+
 		cfg := config.GetConfig()
 		hostIP := utils.GetOutboundIP(cfg.NetworkInterface)
-
-		// 这些变量会被 ProcManager 提取并转换成 "export KEY=VAL;" 放到命令最前面
 		baseEnv := []string{
 			fmt.Sprintf("ROS_IP=%s", hostIP),
 			fmt.Sprintf("ROS_HOSTNAME=%s", hostIP),
 			"ROS_MASTER_URI=http://localhost:11311",
 		}
 
-		setupScript := "" // 初始化为空
-		// 2. 探测逻辑
-		if req.Cmd == "roslaunch" {
-			launchFile := utils.ExtractLaunchFile(req.Args)
+		setupScript := ""
+		finalCmd := req.Cmd
+		finalArgs := []string{}
 
+		switch req.Cmd {
+		case "roslaunch":
+			// roslaunch 保持原样 (前端负责拆分)
+			finalArgs = req.Args
+			launchFile := utils.ExtractLaunchFile(req.Args)
 			if launchFile != "" {
 				detected := utils.DetectWorkspaceSetup(launchFile)
-
-				// 逻辑修正：
 				if detected != utils.DefaultRosSetup {
-					// 1. 找到了明确的工作空间 (情况 2)
 					setupScript = detected
 					log.Printf("[Proc] Detected workspace: %s", detected)
 				} else if strings.HasPrefix(launchFile, "/opt/ros") {
-					// 2. 是系统自带的包 (情况 1) -> 强制使用系统环境
 					setupScript = utils.DefaultRosSetup
-					log.Printf("[Proc] System package detected. Using default: %s", setupScript)
 				} else {
-					// 3. 既不是工作空间，也不是系统包 (情况 3: PX4 等非标包)
-					// 这时候才回退到用户 bashrc
 					setupScript = "USER_BASHRC"
-					log.Printf("[Proc] Non-standard package. Fallback to ~/.bashrc")
 				}
 			} else {
-				// 没找到 launch 文件路径，默认用 bashrc 碰运气
 				setupScript = "USER_BASHRC"
 			}
-		} else {
-			// rosrun 等其他命令，默认用 bashrc
+
+		case "rosrun", "rostopic", "rosservice":
+			// [Debug] 进入 ROS 命令逻辑
+			if len(req.Args) >= 2 {
+				argsStr := req.Args[0]
+				contextPath := req.Args[1]
+
+				// 1. 探测环境
+				log.Printf("[Proc-Debug] Detecting env from path: %s", contextPath)
+				detected := utils.DetectWorkspaceSetup(contextPath)
+				if detected != utils.DefaultRosSetup {
+					setupScript = detected
+					log.Printf("[Proc] Detected workspace: %s", detected)
+				} else {
+					setupScript = "USER_BASHRC"
+					log.Printf("[Proc] Workspace not found, using bashrc")
+				}
+
+				// 2. 解析参数 (关键！)
+				// strings.Fields 会自动按空格分割字符串，处理多个空格的情况
+				finalArgs = strings.Fields(argsStr)
+
+			} else if len(req.Args) == 1 {
+				// 容错：只传了命令，没传路径
+				setupScript = "USER_BASHRC"
+				finalArgs = strings.Fields(req.Args[0])
+			} else {
+				// 没参数？
+				setupScript = "USER_BASHRC"
+			}
+
+		case "bash":
+			if len(req.Args) >= 2 {
+				fullCommand := req.Args[0]
+				contextPath := req.Args[1]
+
+				detected := utils.DetectWorkspaceSetup(contextPath)
+				if detected != utils.DefaultRosSetup {
+					setupScript = detected
+				} else {
+					setupScript = "USER_BASHRC"
+				}
+
+				finalCmd = "bash"
+				// bash -c "..." 这里的命令字符串需要作为一个整体参数
+				finalArgs = []string{"-c", fullCommand}
+			} else {
+				setupScript = "USER_BASHRC"
+				if len(req.Args) > 0 {
+					finalCmd = "bash"
+					finalArgs = []string{"-c", req.Args[0]}
+				}
+			}
+
+		default:
+			log.Printf("[Proc-Debug] Unknown command '%s', hitting default case", req.Cmd)
 			setupScript = "USER_BASHRC"
+			finalArgs = req.Args
 		}
+
+		// [Debug] 打印最终生成的参数
+		log.Printf("[Proc-Debug] Final Decision: Setup=%s, Cmd=%s, Args=%v", setupScript, finalCmd, finalArgs)
+
+		// 构造配置
+		finalEnv := os.Environ()
+		finalEnv = append(finalEnv, baseEnv...)
 
 		procConfig := service.ProcessConfig{
 			ID:          req.ID,
-			CmdStr:      req.Cmd,
-			Args:        req.Args,
-			Env:         baseEnv,     // 传入需要 export 的变量
-			SetupScript: setupScript, // 传入 source 策略
+			CmdStr:      finalCmd,
+			Args:        finalArgs,
+			Env:         finalEnv,
+			SetupScript: setupScript,
 		}
 
 		if err := service.GlobalProcManager.StartProcess(procConfig); err != nil {
@@ -89,30 +148,24 @@ func RegisterProcRoutes(rg *gin.RouterGroup) {
 		})
 	})
 
+	// ... Stop, List 接口保持不变
 	rg.POST("/stop", func(c *gin.Context) {
 		var req struct {
 			ID string `json:"id"`
 		}
 		if err := c.BindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			c.JSON(400, gin.H{"error": err.Error()})
 			return
 		}
-
 		if err := service.GlobalProcManager.StopProcess(req.ID); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			c.JSON(500, gin.H{"error": err.Error()})
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"status": "stopped"})
+		c.JSON(200, gin.H{"status": "stopped"})
 	})
 
 	rg.GET("/list", func(c *gin.Context) {
-		// 直接调用 Manager 获取列表
 		list := service.GlobalProcManager.ListProcesses()
-
-		// 返回 JSON
-		c.JSON(http.StatusOK, gin.H{
-			"count":     len(list),
-			"processes": list,
-		})
+		c.JSON(200, gin.H{"count": len(list), "processes": list})
 	})
 }

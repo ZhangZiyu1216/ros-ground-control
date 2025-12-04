@@ -8,50 +8,56 @@ import (
 
 const DefaultRosSetup = "/opt/ros/noetic/setup.bash"
 
-// DetectWorkspaceSetup 根据 launch 文件路径，向上查找最近的工作空间 setup.bash
-func DetectWorkspaceSetup(launchFilePath string) string {
-	// 如果路径为空，直接返回默认
-	if launchFilePath == "" {
+// DetectWorkspaceSetup 根据文件或目录路径，向上查找最近的工作空间 setup.bash
+func DetectWorkspaceSetup(path string) string {
+	if path == "" {
 		return DefaultRosSetup
 	}
 
-	// 获取文件的绝对路径
-	absPath, err := filepath.Abs(launchFilePath)
+	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return DefaultRosSetup
 	}
 
-	dir := filepath.Dir(absPath)
+	// --- 核心优化：判断是文件还是目录 ---
+	info, err := os.Stat(absPath)
+	var dir string
+	if err == nil && info.IsDir() {
+		// 如果是目录，直接从该目录开始找
+		dir = absPath
+	} else {
+		// 如果是文件（或不存在），从父目录开始找
+		dir = filepath.Dir(absPath)
+	}
 
-	// 循环向上查找，直到根目录
+	// 循环向上查找
 	for {
-		// 1. 检查 devel/setup.bash (catkin_make)
+		// 1. 检查 devel/setup.bash
 		develSetup := filepath.Join(dir, "devel", "setup.bash")
 		if fileExists(develSetup) {
 			return develSetup
 		}
 
-		// 2. 检查 install/setup.bash (catkin build / install)
+		// 2. 检查 install/setup.bash
 		installSetup := filepath.Join(dir, "install", "setup.bash")
 		if fileExists(installSetup) {
 			return installSetup
 		}
 
-		// 3. 检查是否有一级目录叫 devel 或 install (防止用户传进来的路径本身就是 devel 内)
-		// 这种情况比较少见，主要是为了健壮性
+		// 3. 检查 install_isolated/setup.bash (Cartographer 等)
+		installIsoSetup := filepath.Join(dir, "install_isolated", "setup.bash")
+		if fileExists(installIsoSetup) {
+			return installIsoSetup
+		}
 
-		// 向上移动一级
+		// 向上移动
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			// 到达根目录，停止
-			break
+			break // 到达根目录
 		}
 		dir = parent
 	}
 
-	// 如果没找到工作空间，回退策略：
-	// 尝试返回用户的 .bashrc 吗？不，这在非交互式 shell 中不可靠。
-	// 直接返回全局默认
 	return DefaultRosSetup
 }
 

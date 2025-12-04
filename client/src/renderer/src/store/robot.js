@@ -244,7 +244,7 @@ export const useRobotStore = defineStore('robot', () => {
   const addConnection = async (settings) => {
     let currentKey = settings.id || settings.ip
     const targetIp = settings.ip
-    const targetPort = settings.port || 8080
+    const initialPort = settings.port || 8080
 
     if (!clients[currentKey]) clients[currentKey] = createClientObject(settings)
     const client = clients[currentKey]
@@ -252,7 +252,7 @@ export const useRobotStore = defineStore('robot', () => {
 
     // 如果是复用现有对象，更新一下 port (如果是手动输入的)
     if (clients[currentKey]) {
-      clients[currentKey].port = targetPort
+      clients[currentKey].port = initialPort
     }
 
     // 清理旧资源
@@ -264,23 +264,40 @@ export const useRobotStore = defineStore('robot', () => {
 
     let finalRes = undefined
     let finalIp = targetIp
-    let finalPort = targetPort
+    let finalPort = initialPort
 
     try {
       // 1. 尝试直连
       try {
-        finalRes = await handshakeAndConnect(targetIp, targetPort)
+        finalRes = await handshakeAndConnect(targetIp, initialPort)
       } catch (e) {
+        console.warn(
+          `[Connect] Direct connect failed (${targetIp}:${initialPort}), scanning for new address...`
+        )
         // 2. 尝试 mDNS 找回
         if (settings.hostname) {
           console.log(`[Connect] Retry with mDNS: ${settings.hostname}`)
-          const discovery = await findNewIpByHostname(settings.hostname)
-          if (discovery && discovery.ip) {
-            console.log(`[Connect] mDNS resolved: ${discovery.ip}:${discovery.port}`)
-            finalRes = await handshakeAndConnect(discovery.ip, discovery.port)
-            finalIp = discovery.ip
-            finalPort = discovery.port // 更新端口变量
-            client.ipChanged = true
+
+          // [CHANGE] 传入 initialPort 作为“需避让的旧端口”
+          const discovery = await findDeviceAddress(settings.hostname, settings.ip, initialPort)
+
+          if (discovery) {
+            const isIpChanged = discovery.ip !== targetIp
+            const isPortChanged = discovery.port !== initialPort
+
+            if (isIpChanged || isPortChanged) {
+              console.log(`[Connect] Auto-corrected address to: ${discovery.ip}:${discovery.port}`)
+
+              // 使用新地址重试握手
+              finalRes = await handshakeAndConnect(discovery.ip, discovery.port)
+
+              finalIp = discovery.ip
+              finalPort = discovery.port
+              client.ipChanged = true
+            } else {
+              // 发现的地址和旧地址一模一样，说明 mDNS 还没更新，或者真的连不上
+              throw e
+            }
           } else {
             throw e
           }
@@ -463,55 +480,135 @@ export const useRobotStore = defineStore('robot', () => {
   }
 
   const attemptAutoRecovery = async (client) => {
-    const res = await findNewIpByHostname(client.hostname)
-    if (res && res.ip && res.ip !== client.ip) {
+    const res = await findDeviceAddress(client.hostname, client.ip)
+    // 如果发现了设备，且 IP 或 Port 有任何变化
+    if (res && (res.ip !== client.ip || res.port !== client.port)) {
       try {
-        const { ws, token, api } = await handshakeAndConnect(res.ip, client.port)
+        console.log(`[Recovery] Updating endpoint to ${res.ip}:${res.port}`)
+        const { ws, token, api } = await handshakeAndConnect(res.ip, res.port)
+
         if (client.logWs) client.logWs.close()
         client.ip = res.ip
-        client.port = res.port
+        client.port = res.port // 更新端口
         client.api = api
         client.token = token
         client.logWs = ws
-        client.ipChanged = true
+        client.ipChanged = true // 触发持久化保存
         client.status = 'ready'
         client.missedHeartbeats = 0
 
         client.logWs.onmessage = (event) => handleLogMessage(client, JSON.parse(event.data))
         client.logWs.onclose = () => {
           client.status = 'disconnected'
+          broadcastClientState(client)
         }
-        broadcastClientState(client) // 状态变化广播
+
+        broadcastClientState(client)
+        ElNotification({
+          title: '自动重连成功',
+          message: `端口已更新为 ${res.port}`,
+          type: 'success'
+        })
       } catch (e) {
         /* ignore */
       }
     }
   }
-
-  const findNewIpByHostname = (targetHostname) => {
+  const findDeviceAddress = (targetHostname, targetIp, avoidingPort = null) => {
     return new Promise((resolve) => {
-      const cleanTarget = targetHostname.toLowerCase().replace('.local', '')
-      let result = null
+      // 1. 准备目标名称
+      const cleanTargetName = targetHostname
+        ? targetHostname.toLowerCase().replace('.local', '')
+        : null
+
+      console.log(
+        `[Discovery] Start scanning. Target: "${cleanTargetName}", IP: "${targetIp}", AvoidPort: ${avoidingPort}`
+      )
+
+      let bestCandidate = null
       let cleanup = null
+      let timer = null
+
+      const finish = (result) => {
+        if (timer) clearTimeout(timer)
+        if (cleanup) cleanup()
+        window.api.stopMdnsScan()
+        resolve(result)
+      }
+
       const onFound = (service) => {
-        const h = service.txt?.hostname || service.host || ''
-        if (h.toLowerCase().replace('.local', '') === cleanTarget) {
-          const ip = service.addresses?.find((a) => a.includes('.'))
-          if (ip) result = { ip, id: service.txt?.id, port: service.port }
+        // service 结构: { name, port, addresses: ['192.168.x.x', ...], txt: { hostname: ... } }
+
+        // 2. 获取发现的服务信息
+        const foundHostname = service.txt?.hostname || service.host || service.name || ''
+        const cleanFoundName = foundHostname.toLowerCase().replace('.local', '')
+        // 后端发来的 IP (只取了第一个)，最好能在后端改为发送整个 addresses 数组，这里假设后端只发了 ip
+        // 如果你修改了后端传 addresses，可以用 service.addresses.includes(targetIp) 判断
+        const foundIp = service.ip || (service.addresses && service.addresses[0])
+        const foundPort = service.port
+
+        // --- 调试日志 (关键) ---
+        console.log(`[Discovery] Scanned: "${cleanFoundName}" (${foundIp}:${foundPort})`)
+
+        // 3. 匹配逻辑
+        let isMatch = false
+
+        // 规则 A: ID 匹配 (最强匹配，如果 settings 里存了 ID)
+        // (需要在 createClientObject 时保存 id，目前暂未实现完全，先跳过)
+
+        // 规则 B: 主机名匹配
+        if (cleanTargetName && cleanFoundName === cleanTargetName) {
+          isMatch = true
+          console.log('   -> Match Reason: Hostname exact match')
+        }
+
+        // 规则 C: IP 匹配
+        if (!isMatch && targetIp && foundIp === targetIp) {
+          isMatch = true
+          console.log('   -> Match Reason: IP match')
+        }
+
+        // 规则 D [新增]: Localhost 特判
+        // 如果用户填的是 localhost，而 mDNS 发现了任意服务，通常这就是本机的服务。
+        // 为了安全，我们假设只要发现了，且目标是 localhost，就认为是匹配的。
+        if (!isMatch && (cleanTargetName === 'localhost' || targetIp === '127.0.0.1')) {
+          // 进阶：可以在这里判断 service.addresses 是否包含本机 IP，暂且直接通过
+          isMatch = true
+          console.log('   -> Match Reason: Localhost fuzzy match')
+        }
+
+        // 4. 处理匹配结果
+        if (isMatch && foundIp && foundPort) {
+          const candidate = { ip: foundIp, port: foundPort, id: service.txt?.id }
+
+          // [Fast Path] 发现新端口，立即返回
+          if (avoidingPort && foundPort !== avoidingPort) {
+            console.log(`[Discovery] ✅ FOUND NEW PORT: ${foundPort} (Old: ${avoidingPort})`)
+            finish(candidate)
+            return
+          }
+
+          // [Ghost Path] 端口没变，可能是缓存，暂存起来
+          if (!bestCandidate) {
+            console.log(`[Discovery] Found match but port same (${foundPort}). Keep looking...`)
+            bestCandidate = candidate
+          }
         }
       }
+
       try {
         cleanup = window.api.onMdnsServiceFound(onFound)
         window.api.startMdnsScan()
       } catch (e) {
+        console.error('[Discovery] API Error:', e)
         resolve(null)
         return
       }
-      setTimeout(() => {
-        window.api.stopMdnsScan()
-        if (cleanup) cleanup()
-        resolve(result)
-      }, 2500)
+
+      timer = setTimeout(() => {
+        console.log(`[Discovery] Timeout. Returning best candidate:`, bestCandidate)
+        finish(bestCandidate)
+      }, 2000)
     })
   }
 

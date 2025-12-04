@@ -1,8 +1,7 @@
 <template>
   <div class="ide-layout" tabindex="0" @keydown.ctrl.s.prevent="handleSave">
     <!-- [新增] 自定义窗口控制按钮 (绝对定位在右上角) -->
-    <div class="window-controls-tab"></div>
-    <div class="window-controls windows-style no-drag">
+    <div class="window-controls windows-style">
       <div class="win-ctrl-btn min" @click="minimizeWindow">
         <el-icon><Minus /></el-icon>
       </div>
@@ -17,7 +16,7 @@
     <!-- 1. 左侧侧边栏：会话列表 -->
     <aside class="sidebar">
       <!-- 头部：可拖拽区域 -->
-      <div class="sidebar-header drag-region">
+      <div class="sidebar-header">
         <span class="header-title">文件编辑器</span>
       </div>
 
@@ -116,7 +115,7 @@
                   <vue-monaco-editor
                     v-model:value="file.content"
                     :language="file.language"
-                    theme="vs"
+                    :theme="editorTheme"
                     :options="monacoOptions"
                     class="monaco-editor-instance"
                     @change="file.isDirty = file.content !== file.originalContent"
@@ -146,6 +145,7 @@
 
         <!-- 离线/连接状态 -->
         <div v-else class="empty-state offline-state">
+          <div class="drag-placeholder-header"></div>
           <div class="state-card">
             <template v-if="getSessionStatus(currentSession.id) === 'setting_up'">
               <div class="spinner-ring"></div>
@@ -163,6 +163,8 @@
 
       <!-- 情况 B: 无会话 -->
       <div v-else class="empty-state">
+        <!-- [新增] 专门的顶部拖拽占位条，解决无 Tab 时顶部无法拖拽的问题 -->
+        <div class="drag-placeholder-header"></div>
         <div class="empty-content">
           <el-icon :size="64" color="var(--text-disabled)"><Monitor /></el-icon>
           <p>选择会话以编辑文件</p>
@@ -245,6 +247,14 @@ import FileBrowser from '../components/FileBrowser.vue'
 import { useRobotStore } from '../store/robot'
 import { createApi } from '../api/request' // 用于手动注入 Token
 
+import { useDark } from '@vueuse/core'
+const isDark = useDark({
+  storageKey: 'vueuse-color-scheme',
+  valueDark: 'dark',
+  valueLight: 'light'
+})
+const editorTheme = computed(() => (isDark.value ? 'vs-dark' : 'vs'))
+
 // Monaco Worker Setup (标准配置)
 import * as monaco from 'monaco-editor'
 import editorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker'
@@ -277,8 +287,7 @@ const monacoOptions = {
   formatOnType: true,
   formatOnPaste: true,
   minimap: { enabled: true },
-  fontSize: 14,
-  theme: 'vs'
+  fontSize: 14
 }
 
 const languageOptions = [
@@ -808,29 +817,46 @@ function handleTabsWheel(e) {
 // #endregion
 </script>
 
+<style>
+/* 默认浅色主题变量 */
+:root {
+  --bg-color: #ffffff;
+  --panel-bg: #f3f3f3;
+  --editor-bg: #ffffff;
+  --header-height: 40px;
+  --border-color: #e4e4e4;
+  --text-primary: #3b3b3b;
+  --text-secondary: #868686;
+  --text-disabled: #d1d1d1;
+  --accent-color: #007acc;
+  --selection-bg: #e4e6f1;
+  --hover-bg: #e8e8e8;
+  --status-bar-bg: #007acc;
+  --status-bar-fg: #ffffff;
+}
+
+/* 深色主题变量：通过 html.dark 覆盖 :root */
+html.dark:root {
+  --bg-color: #1e1e1e;
+  --panel-bg: #252526;
+  --editor-bg: #1e1e1e;
+  --border-color: #3e3e42;
+  --text-primary: #cccccc;
+  --text-secondary: #858585;
+  --text-disabled: #4d4d4d;
+  --accent-color: #007acc;
+  --selection-bg: #37373d;
+  --hover-bg: #2a2d2e;
+  --status-bar-bg: #007acc;
+  --status-bar-fg: #ffffff;
+}
+</style>
+
 <style scoped>
 /* ============================================
    1. 变量与主题定义
    ============================================ */
 .ide-layout {
-  /* Light Theme (Default) */
-  --bg-color: #ffffff;
-  --panel-bg: #f3f3f3; /* Sidebar bg */
-  --editor-bg: #ffffff;
-  --header-height: 40px; /* Tab 高度 */
-
-  --border-color: #e4e4e4;
-  --text-primary: #3b3b3b;
-  --text-secondary: #868686;
-  --text-disabled: #d1d1d1;
-
-  --accent-color: #007acc; /* VS Code Blue */
-  --selection-bg: #e4e6f1;
-  --hover-bg: #e8e8e8;
-
-  --status-bar-bg: #007acc;
-  --status-bar-fg: #ffffff;
-
   /* Layout */
   display: flex;
   height: 100vh;
@@ -842,29 +868,7 @@ function handleTabsWheel(e) {
   position: relative;
 }
 
-/* Dark Theme */
-:global(html.dark) .ide-layout {
-  --bg-color: #1e1e1e; /* VS Code Dark */
-  --panel-bg: #252526; /* Sidebar Dark */
-  --editor-bg: #1e1e1e;
-
-  --border-color: #3e3e42; /* Dark Border */
-  --text-primary: #cccccc;
-  --text-secondary: #858585;
-  --text-disabled: #4d4d4d;
-
-  --accent-color: #007acc;
-  --selection-bg: #37373d;
-  --hover-bg: #2a2d2e;
-
-  --status-bar-bg: #007acc;
-  --status-bar-fg: #ffffff;
-}
-
-/* 拖拽区域控制 */
-.drag-region {
-  -webkit-app-region: drag;
-}
+/* 拖拽区域控制 - 通用类 */
 .no-drag {
   -webkit-app-region: no-drag;
 }
@@ -877,21 +881,26 @@ function handleTabsWheel(e) {
   top: 0;
   right: 0;
   height: var(--header-height);
-  width: 100vw;
+  width: 140px; /* 缩小宽度，只占右上角 */
   display: flex;
   z-index: 9998;
-  -webkit-app-region: drag !important;
+  -webkit-app-region: drag !important; /* 这个区域负责拖拽窗口 */
 }
 .window-controls.windows-style {
   position: absolute;
   top: 0;
   right: 0;
+  width: 140px; /* 固定宽度 */
   height: var(--header-height);
   display: flex;
-  z-index: 9999; /* 保证在最上层 */
+  justify-content: flex-end;
+  z-index: 20000; /* [关键] 必须比 el-tabs 高 */
+  /* [关键] 容器本身是可拖拽区域 */
   -webkit-app-region: no-drag !important;
+  background-color: var(--panel-bg);
+  border-bottom: 1px solid var(--border-color);
+  pointer-events: none;
 }
-
 .win-ctrl-btn {
   width: 46px;
   height: 100%;
@@ -902,7 +911,9 @@ function handleTabsWheel(e) {
   transition: all 0.2s;
   cursor: pointer;
   font-size: 14px;
+  /* [关键] 按钮区域剔除拖拽，恢复点击交互 */
   -webkit-app-region: no-drag !important;
+  pointer-events: auto;
 }
 .win-ctrl-btn:hover {
   background-color: rgba(128, 128, 128, 0.1);
@@ -930,6 +941,7 @@ function handleTabsWheel(e) {
   display: flex;
   align-items: center;
   padding-left: 20px;
+  -webkit-app-region: drag !important;
 }
 .header-title {
   font-size: 14px;
@@ -961,7 +973,7 @@ function handleTabsWheel(e) {
   padding: 6px 15px 6px 20px;
   cursor: pointer;
   font-size: 13px;
-  border-left: 2px solid transparent; /* 左侧指示条 */
+  border-left: 2px solid transparent;
   color: var(--text-primary);
   transition: all 0.1s;
 }
@@ -971,7 +983,7 @@ function handleTabsWheel(e) {
 }
 .session-item.active {
   background-color: var(--selection-bg);
-  color: var(--text-primary); /* VS Code 风格，文字不变色，靠背景区分 */
+  color: var(--text-primary);
   border-left-color: var(--accent-color);
 }
 
@@ -986,7 +998,7 @@ function handleTabsWheel(e) {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-/* 状态灯 */
+
 .icon {
   font-size: 14px;
 }
@@ -1000,7 +1012,6 @@ function handleTabsWheel(e) {
   color: #e6a23c;
 }
 
-/* 关闭按钮 */
 .close-btn-wrapper {
   opacity: 0;
   display: flex;
@@ -1034,9 +1045,11 @@ function handleTabsWheel(e) {
   transform: rotate(90deg);
 }
 
+/* Dropdown 容器 */
 .add-dropdown {
   background: var(--bg-color);
   padding: 5px 0;
+  border-bottom: 1px solid var(--border-color);
 }
 .dropdown-item {
   padding: 8px 20px 8px 32px;
@@ -1060,6 +1073,24 @@ function handleTabsWheel(e) {
   background: #57c569;
 }
 
+/* [修复 3] 补充缺失的 Dropdown Info 样式 */
+.dropdown-info {
+  padding: 8px 20px 8px 32px;
+  display: flex;
+  align-items: center;
+  gap: 8px; /* 图标和文字间距 */
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: default;
+  font-style: italic;
+}
+.dropdown-info.warning {
+  color: #e6a23c;
+}
+.dropdown-info .el-icon {
+  font-size: 14px;
+}
+
 /* ============================================
    4. 主编辑区 (Editor Area)
    ============================================ */
@@ -1069,12 +1100,13 @@ function handleTabsWheel(e) {
   flex-direction: column;
   background-color: var(--editor-bg);
   min-width: 0;
+  position: relative; /* 建立定位上下文 */
 }
 .editor-workspace {
   flex: 1;
   display: flex;
   flex-direction: column;
-  height: 0; /* 允许收缩 */
+  height: 0;
 }
 
 /* Tabs Header */
@@ -1082,34 +1114,50 @@ function handleTabsWheel(e) {
   height: 100%;
   width: 100%;
   display: flex;
+  flex: 1;
   flex-direction: column;
-  overflow: hidden; /* 防止溢出 */
+  overflow: hidden;
 }
-.file-tabs {
-  height: 100%;
+
+:deep(.el-tabs) {
   display: flex;
   flex-direction: column;
+  height: 100%; /* 关键：撑满父容器 */
 }
+
+/* [修复] el-tabs 样式 */
 :deep(.el-tabs__header) {
   margin: 0;
   background-color: var(--panel-bg);
   border-bottom: 1px solid var(--border-color);
-  padding-right: 140px;
-  flex-shrink: 0; /* 防止头部被压缩 */
+  margin-right: 140px !important;
+  width: calc(100% - 140px) !important;
+  flex-shrink: 0;
+  /* 允许按住 Tab 空白处拖拽 */
+  -webkit-app-region: no drag !important;
+}
+
+:deep(.el-tabs__content) {
+  flex: 1; /* Flex 伸缩 */
+  height: 0; /* 关键：配合 flex:1 实现高度自适应，防止内容溢出撑开 */
+  padding: 0;
+  background-color: var(--editor-bg);
   -webkit-app-region: no-drag !important;
 }
+:deep(.el-tab-pane) {
+  height: 100%;
+  width: 100%;
+}
+
 :deep(.el-tabs__nav-wrap) {
+  margin-bottom: -1px;
   -webkit-app-region: drag !important;
 }
-:deep(.el-tabs__content) {
-  flex: 1; /* 占据剩余空间 */
-  height: 0; /* 关键：允许 Flex 子项收缩，从而触发内部滚动条 */
-  padding: 0;
-  background-color: #ffffff;
+:deep(.el-tabs__nav-scroll) {
+  -webkit-app-region: drag !important;
 }
-:deep(.el-tabs__nav-wrap) {
-  margin-bottom: -1px; /* 盖住底边框 */
-}
+
+/* Tab 项 */
 :deep(.el-tabs__item) {
   height: var(--header-height);
   line-height: var(--header-height);
@@ -1120,18 +1168,21 @@ function handleTabsWheel(e) {
   font-size: 13px;
   padding: 0 15px !important;
   font-weight: 400;
-  transition: background 0.1s;
+
+  /* [关键] Tab 标签本身 no-drag，确保可点击 */
+  -webkit-app-region: no-drag !important;
+  cursor: pointer;
 }
+
 :deep(.el-tabs__item.is-active) {
-  background-color: var(--editor-bg); /* 激活 Tab 与编辑器背景一致 */
+  background-color: var(--editor-bg);
   color: var(--text-primary) !important;
-  border-top: 1px solid var(--accent-color) !important; /* 顶部高亮条 */
+  border-top: 1px solid var(--accent-color) !important;
 }
 :deep(.el-tabs__item:hover:not(.is-active)) {
   background-color: var(--hover-bg);
 }
 :deep(.el-tabs__item .is-icon-close) {
-  /* [核心修复] 显式禁止拖拽，确保点击事件能触发 */
   -webkit-app-region: no-drag !important;
   cursor: pointer;
   border-radius: 50%;
@@ -1139,14 +1190,10 @@ function handleTabsWheel(e) {
   width: 16px;
   height: 16px;
 }
-
-/* 优化关闭按钮的悬浮效果 */
 :deep(.el-tabs__item .is-icon-close:hover) {
-  background-color: rgba(0, 0, 0, 0.1); /* 浅色背景 */
-  color: #f56c6c !important; /* 红色图标 */
+  background-color: rgba(0, 0, 0, 0.1);
+  color: #f56c6c !important;
 }
-
-/* 深色模式适配 */
 :global(html.dark) :deep(.el-tabs__item .is-icon-close:hover) {
   background-color: rgba(255, 255, 255, 0.2);
 }
@@ -1181,13 +1228,14 @@ function handleTabsWheel(e) {
   height: 100%;
   width: 100%;
   background-color: var(--editor-bg);
+  /* 再次确保编辑器不被拖拽影响 */
+  -webkit-app-region: no-drag;
 }
 :deep(.el-tab-pane) {
   height: 100%;
   width: 100%;
 }
 
-/* 嵌入浏览器 */
 .embedded-browser-wrapper {
   height: 100%;
   background: var(--editor-bg);
@@ -1239,58 +1287,57 @@ function handleTabsWheel(e) {
 }
 
 .el-dropdown {
-  color: inherit; /* 确保 Dropdown 组件本身也继承颜色 */
+  color: inherit;
   height: 100%;
   display: flex;
   align-items: center;
 }
 
 /* ============================================
-   6. 离线/空状态 (Empty States) - 修复版
+   6. 离线/空状态 (Empty States)
    ============================================ */
-.empty-state {
-  /* [修复1] 确保占满父容器的所有剩余空间 */
+.drag-placeholder-header {
+  height: var(--header-height);
+  background-color: var(--panel-bg); /* 与侧边栏顶部同色，视觉更统一 */
+  border-bottom: 1px solid var(--border-color);
+  flex-shrink: 0;
+  width: calc(100% - 140px) !important;
+  margin-right: 140px;
+  /* 允许拖拽 */
+  -webkit-app-region: drag !important;
+}
+.empty-state,
+.offline-state {
   flex: 1;
   height: 100%;
   width: 100%;
-  margin-top: var(--header-height);
-  /* [修复2] 使用 Flex 居中 */
   display: flex;
-  flex-direction: column; /* 明确指定垂直排列，虽然只有一个子元素，但这能避免意外的行布局行为 */
-  justify-content: center; /* 垂直居中 */
-  align-items: center; /* 水平居中 */
+  flex-direction: column;
   background-color: var(--editor-bg);
   color: var(--text-secondary);
-  /* 允许背景拖拽 */
-  -webkit-app-region: drag;
 }
 
-/* 内部内容包裹层：确保内部元素也垂直堆叠并居中 */
 .empty-content,
 .state-card {
+  flex: 1; /* 占据剩余高度 */
   display: flex;
-  flex-direction: column; /* 让图标、标题、文字垂直排列 */
-  align-items: center; /* 让它们水平居中对齐 */
+  flex-direction: column;
+  align-items: center;
   justify-content: center;
-  text-align: center; /* 确保文字文本居中 */
-  gap: 15px; /* 元素之间的间距 */
+  text-align: center;
+  gap: 15px;
   max-width: 400px;
+  -webkit-app-region: no-drag; /* 内容区域不拖拽，方便以后加按钮 */
+}
+.empty-state .empty-content,
+.offline-state .state-card {
+  margin: auto; /* 这是最简单的 Flex 子元素居中方案 */
+  flex: unset; /* 取消之前的 flex 设置 */
 }
 
-/* 针对 state-card 的额外装饰 (离线状态) */
-.state-card {
-  padding: 40px;
-  border: 1px dashed var(--border-color);
-  border-radius: 8px;
-  background: var(--panel-bg);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.03);
-}
-
-/* 旋转加载圈 */
 .spinner-ring {
   width: 40px;
   height: 40px;
-  /* margin-bottom 不需要了，由 gap 控制 */
   border: 4px solid var(--border-color);
   border-top-color: var(--accent-color);
   border-radius: 50%;
@@ -1302,7 +1349,6 @@ function handleTabsWheel(e) {
   }
 }
 
-/* 文字样式微调 */
 .state-card h3 {
   margin: 0;
   font-size: 18px;

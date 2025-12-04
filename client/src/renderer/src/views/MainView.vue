@@ -561,6 +561,10 @@ async function checkAndSaveIpChange() {
         savedItem.settings.ip = client.ip
         hasChange = true
       }
+      if (client.port && savedItem.settings.port !== client.port) {
+        savedItem.settings.port = client.port
+        hasChange = true
+      }
       if (savedItem.settings.id !== currentActiveID) {
         savedItem.settings.id = currentActiveID
         hasChange = true
@@ -571,6 +575,7 @@ async function checkAndSaveIpChange() {
         connectionSettings.value.ip === client.ip
       ) {
         connectionSettings.value.ip = client.ip
+        connectionSettings.value.port = client.port
         connectionSettings.value.id = currentActiveID
       }
 

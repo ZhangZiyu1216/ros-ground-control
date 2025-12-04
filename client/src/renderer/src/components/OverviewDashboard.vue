@@ -1817,7 +1817,7 @@ onUnmounted(() => {
 /* 调整环形进度条内部文字位置 */
 .ring-wrapper :deep(.el-progress__text) {
   top: 50%;
-  transform: translate(-10%, -50%);
+  transform: translate(-2%, -50%);
 }
 /* 标签 */
 .ring-label {

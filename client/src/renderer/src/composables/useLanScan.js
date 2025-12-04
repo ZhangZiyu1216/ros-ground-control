@@ -45,7 +45,6 @@ export function useLanScan() {
       })
 
       if (existsIndex !== -1) {
-        // 更新现有项 (可能 hostname 变了)
         discoveredDevices.value[existsIndex] = deviceItem
       } else {
         discoveredDevices.value.push(deviceItem)

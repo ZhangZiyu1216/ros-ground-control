@@ -1,9 +1,5 @@
 <template>
-  <div
-    v-loading="isInitializing"
-    class="file-browser"
-    element-loading-background="rgba(255, 255, 255, 0.8)"
-  >
+  <div v-loading="isInitializing" class="file-browser" element-loading-background="var(--fb-bg)">
     <!-- 1. 左侧导航栏 -->
     <div class="sidebar">
       <el-menu :default-active="currentPath" @select="handleMenuSelect">
@@ -231,26 +227,62 @@
 
       <!-- 2.3 底部操作栏 -->
       <div v-if="!hideFooter" class="footer-toolbar">
-        <div class="selected-info">
-          <!-- [修改] 提示文案 -->
-          <template v-if="targetType === 'path'">
-            <span
-              >已选择:
-              {{ selectedFile && selectedFile.isDir ? selectedFile.name : '当前目录' }}</span
-            >
-          </template>
-          <template v-else>
-            <span v-if="selectedFile">已选择: {{ selectedFile.name }}</span>
-            <span v-else>未选择文件</span>
-          </template>
+        <div class="footer-left-area">
+          <!-- 选中信息 (仅显示文件信息，命令信息由气泡承担) -->
+          <div class="selected-info">
+            <template v-if="targetType === 'path'">
+              <span>当前路径: {{ currentPath }}</span>
+            </template>
+            <template v-else>
+              <span v-if="selectedFile">已选择: {{ selectedFile.name }}</span>
+              <span v-else>未选择文件</span>
+            </template>
+          </div>
         </div>
-        <div>
+
+        <div class="footer-actions">
+          <!-- [修改] 启动命令按钮区域 (包含悬浮气泡) -->
+          <div v-if="enableRosCommand" class="cmd-trigger-wrapper">
+            <!-- 气泡提示 (Chat Bubble) -->
+            <transition name="bubble-pop">
+              <div v-if="selectedCommandData" class="chat-bubble">
+                <div class="bubble-header">
+                  <el-icon><Operation /></el-icon>
+                  <span>Ready to Run</span>
+                  <el-icon class="bubble-close" @click="clearCommand"><Close /></el-icon>
+                </div>
+                <div class="bubble-body">
+                  <code class="cmd-code"
+                    >{{ selectedCommandData.cmd }} {{ selectedCommandData.argsStr }}</code
+                  >
+                </div>
+                <!-- 底部小三角 -->
+                <div class="bubble-arrow"></div>
+              </div>
+            </transition>
+
+            <!-- 按钮 (选中命令后变为 Warning 色，提示用户注意) -->
+            <el-button
+              :type="selectedCommandData ? 'warning' : 'primary'"
+              link
+              @click="isCmdDialogVisible = true"
+            >
+              <el-icon style="margin-right: 4px"><Operation /></el-icon>
+              {{ selectedCommandData ? '修改命令...' : '在此目录启动命令...' }}
+            </el-button>
+          </div>
+
+          <el-divider v-if="enableRosCommand" direction="vertical" />
+
           <el-button @click="$emit('close')">取消</el-button>
-          <el-button type="primary" :disabled="!isSelectionConfirmed" @click="onConfirm"
-            >选择</el-button
-          >
+
+          <!-- 确认按钮 -->
+          <el-button type="primary" :disabled="!isSelectionConfirmed" @click="onConfirm">
+            {{ selectedCommandData ? '保存命令' : '选择' }}
+          </el-button>
         </div>
       </div>
+      <RosCommandDialog v-model="isCmdDialogVisible" @confirm="handleRosCommandConfirm" />
 
       <!-- 通用名称输入弹窗 (新建/重命名) -->
       <el-dialog v-model="nameDialogVisible" :title="nameDialogTitle" width="400px" append-to-body>
@@ -293,6 +325,7 @@ import { useRobotStore } from '../store/robot'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import ContextMenu from '@imengyu/vue3-context-menu'
 import '@imengyu/vue3-context-menu/lib/vue3-context-menu.css'
+import RosCommandDialog from './RosCommandDialog.vue'
 
 // Icons
 import {
@@ -327,18 +360,21 @@ import {
   View,
   Hide,
   Loading,
-  Close
+  Close,
+  Operation
 } from '@element-plus/icons-vue'
 // #endregion
 
 // #region 2. Props & Emits
 const props = defineProps({
   initialPath: String,
+  initialCommandData: { type: Object, default: null },
   allowedExtensions: { type: Array, default: () => [] },
   backendId: { type: String, required: true }, // 核心：UUID
   showClose: { type: Boolean, default: false },
   hideFooter: { type: Boolean, default: true },
-  targetType: { type: String, default: 'file' }
+  targetType: { type: String, default: 'file' },
+  enableRosCommand: { type: Boolean, default: false }
 })
 
 const emit = defineEmits(['file-selected', 'cancel', 'close'])
@@ -362,6 +398,8 @@ const isProcessing = ref(false) // 用于全局耗时操作遮罩
 const showHiddenFiles = ref(false)
 const viewMode = ref('icon') // 'list' | 'icon'
 const selectedFile = ref(null)
+const isCmdDialogVisible = ref(false)
+const selectedCommandData = ref(null) // { cmd, argsStr, path }
 
 // 3.3 交互引用
 const fileTableRef = ref(null)
@@ -406,6 +444,7 @@ const iconMap = {
 
 // #region 4. Computed Logic
 const globalClipboard = computed(() => robotStore.clipboard)
+const hasCommand = computed(() => !!selectedCommandData.value)
 
 const isRoot = computed(() => currentPath.value === '/')
 const canGoBack = computed(() => historyIndex.value > 0)
@@ -426,8 +465,9 @@ const isInTrash = computed(() => {
   )
 })
 
-// 确认按钮状态
+// 确认按钮状态：如果设定了命令，则允许确认；否则看文件选择
 const isSelectionConfirmed = computed(() => {
+  if (hasCommand.value) return true
   if (props.targetType === 'path') return true
   return isFileSelectable(selectedFile.value)
 })
@@ -469,6 +509,7 @@ function formatDate(timestamp) {
 }
 
 function isFileSelectable(file) {
+  if (hasCommand.value) return false // [核心修改] 互斥逻辑
   if (!file) return false
   if (props.targetType === 'path') return file.isDir
   if (file.isDir) return false
@@ -492,12 +533,20 @@ function getFileIcon(file) {
 function getItemClass(file) {
   const classes = []
   if (selectedFile.value && file.name === selectedFile.value.name) classes.push('selected')
-  if (!file.isDir && !isFileSelectable(file)) classes.push('unselectable-file')
+  // 如果有命令，或者是本来就不可选的文件 -> 加上置灰样式
+  if (hasCommand.value || (!file.isDir && !isFileSelectable(file))) {
+    classes.push('unselectable-file')
+  }
+  // 额外给一个全局禁用的标记，用于 CSS 区分透明度
+  if (hasCommand.value) classes.push('global-disabled')
   return classes
 }
 
 function tableRowClassName({ row }) {
-  return !row.isDir && !isFileSelectable(row) ? 'unselectable-file' : ''
+  if (hasCommand.value || (!row.isDir && !isFileSelectable(row))) {
+    return 'unselectable-file global-disabled'
+  }
+  return ''
 }
 
 // 供模板使用的名称显示（去除回收站冲突后缀的视觉干扰）
@@ -635,6 +684,20 @@ const restoreFile = async (file) => {
   const fullPath = pathHelper.join(currentPath.value, file.name)
   await performFileAction('还原', () => robotStore.fsRestore(props.backendId, fullPath))
 }
+
+const handleRosCommandConfirm = (data) => {
+  // 记录命令和当前路径
+  selectedCommandData.value = {
+    cmd: data.cmd,
+    argsStr: data.argsStr,
+    path: currentPath.value
+  }
+}
+
+const clearCommand = () => {
+  selectedCommandData.value = null
+}
+
 // #endregion
 
 // #region 7. UI Interaction Handlers
@@ -663,6 +726,18 @@ const onRowDoubleClick = (row) => {
   }
 }
 const onConfirm = () => {
+  // Case 1: 选择了 ROS 命令
+  if (selectedCommandData.value) {
+    emit('file-selected', {
+      isCommand: true,
+      // 确保这里的 cmd 是刚才 Dialog 传出来的 (e.g. 'rostopic pub')
+      cmd: selectedCommandData.value.cmd,
+      // 构造 args 数组: [参数字符串, 当前路径]
+      args: [selectedCommandData.value.argsStr, selectedCommandData.value.path]
+    })
+    return
+  }
+  // Case 2: 普通文件选择 (保持原逻辑)
   if (props.targetType === 'path') {
     const final = selectedFile.value?.isDir
       ? pathHelper.join(currentPath.value, selectedFile.value.name)
@@ -880,11 +955,21 @@ const onContainerContextMenu = (e) => {
 onMounted(async () => {
   isInitializing.value = true
   await loadSidebarData()
+  // 1. 确定初始路径
   let start = props.initialPath
   if (!start) {
     const home = sidebarItems.value.places.find((p) => p.icon === 'House')?.path
     start = home || '/'
   }
+  // 2. [新增] 恢复命令回显状态
+  if (props.enableRosCommand && props.initialCommandData) {
+    selectedCommandData.value = {
+      cmd: props.initialCommandData.cmd,
+      argsStr: props.initialCommandData.argsStr,
+      path: start // 命令绑定的路径就是当前打开的初始路径
+    }
+  }
+  // 3. 加载目录
   await loadDirectory(start)
   isInitializing.value = false
 })
@@ -904,12 +989,14 @@ watch(
 // #endregion
 </script>
 
-<style scoped>
+<style>
 /* ============================================
-   1. CSS 变量定义 (Theme System)
+   全局主题变量定义 (非 Scoped)
+   解决深色模式下 Element Plus 内部组件无法继承变量的问题
    ============================================ */
+
+/* 1. 浅色模式 (默认) */
 .file-browser {
-  /* --- 浅色模式 --- */
   --fb-bg: #ffffff;
   --fb-sidebar-bg: #f5f7fa;
   --fb-border: #e4e7ed;
@@ -918,20 +1005,47 @@ watch(
   --fb-hover-bg: rgba(0, 0, 0, 0.04);
   --fb-active-bg: #ecf5ff;
   --fb-active-text: #409eff;
+  --fb-bubble-bg: #303133;
+  --fb-bubble-text: #fff;
 
-  /* 布局与外观 */
-  display: flex;
-  flex-direction: row;
-  height: 100%;
-  width: 100%;
-  border-radius: 8px; /* 更圆润 */
-  overflow: hidden;
-  background-color: var(--fb-bg);
-  color: var(--fb-text-main);
-  border: 1px solid var(--fb-border);
-  transition: all 0.3s ease;
+  /* 强制覆盖 Element Plus 内部变量 (关键) */
+  --el-color-primary: var(--fb-active-text);
+  --el-text-color-primary: var(--fb-text-main);
+  --el-text-color-regular: var(--fb-text-sub);
+  --el-bg-color: var(--fb-bg);
+  --el-fill-color-light: var(--fb-hover-bg);
+  --el-border-color-lighter: var(--fb-border);
+  /* 修复 Table 背景 */
+  --el-table-bg-color: transparent;
+  --el-table-tr-bg-color: transparent;
+  --el-table-header-bg-color: var(--fb-sidebar-bg);
 }
 
+/* 2. 深色模式 */
+html.dark .file-browser {
+  --fb-bg: #1e1e20;
+  --fb-sidebar-bg: #141414;
+  --fb-border: #414243;
+  --fb-text-main: #e5eaf3;
+  --fb-text-sub: #a3a6ad;
+  --fb-hover-bg: rgba(255, 255, 255, 0.08);
+  --fb-active-bg: rgba(64, 158, 255, 0.2);
+  --fb-active-text: #409eff;
+  --fb-bubble-bg: #409eff;
+  --fb-bubble-text: #fff;
+
+  /* 深色模式下的 Element Plus 覆盖 */
+  --el-bg-color: var(--fb-bg);
+  --el-fill-color-light: var(--fb-hover-bg);
+  --el-border-color-lighter: var(--fb-border);
+  --el-table-header-bg-color: var(--fb-sidebar-bg);
+}
+</style>
+
+<style scoped>
+/* ============================================
+   1. CSS 变量定义 (Theme System)
+   ============================================ */
 /* --- 深色模式适配 --- */
 :global(html.dark) .file-browser {
   --fb-bg: #1e1e20;
@@ -942,6 +1056,41 @@ watch(
   --fb-hover-bg: rgba(255, 255, 255, 0.08);
   --fb-active-bg: rgba(64, 158, 255, 0.2);
   --fb-active-text: #409eff;
+  --fb-bubble-bg: #409eff; /* 深色模式下气泡用蓝色 */
+  --fb-bubble-text: #fff;
+}
+.file-browser {
+  /* --- 浅色模式 --- */
+  --fb-bg: #ffffff;
+  --fb-sidebar-bg: #f5f7fa;
+  --fb-border: #e4e7ed;
+  --fb-text-main: #303133;
+  --fb-text-sub: #909399;
+  --fb-hover-bg: rgba(0, 0, 0, 0.04);
+  --fb-active-bg: #ecf5ff;
+  --fb-active-text: #409eff;
+  --fb-bubble-bg: #303133; /* 气泡背景 */
+  --fb-bubble-text: #fff;
+
+  /* 布局与外观 */
+  display: flex;
+  flex-direction: row;
+  height: 100%;
+  width: 100%;
+  border-radius: 8px;
+  overflow: hidden;
+  background-color: var(--fb-bg);
+  color: var(--fb-text-main);
+  border: 1px solid var(--fb-border);
+  transition: all 0.3s ease;
+
+  /* [核心修复] 强制覆盖 Element Plus 内部变量，使其跟随 FileBrowser 的主题 */
+  --el-color-primary: var(--fb-active-text) !important;
+  --el-text-color-primary: var(--fb-text-main) !important;
+  --el-text-color-regular: var(--fb-text-sub) !important;
+  --el-bg-color: var(--fb-bg) !important;
+  --el-border-color-lighter: var(--fb-border) !important;
+  --el-fill-color-light: var(--fb-hover-bg) !important;
 }
 
 /* ============================================
@@ -1186,6 +1335,22 @@ watch(
 :deep(.el-table td.el-table__cell) {
   border-bottom: 1px solid var(--fb-border);
 }
+:deep(.unselectable-file) {
+  color: var(--el-text-color-disabled);
+  cursor: not-allowed !important;
+}
+:deep(.unselectable-file .el-icon) {
+  opacity: 0.4;
+  filter: grayscale(100%); /* 图标变灰 */
+}
+/* 全局禁用时（选择了命令），让文件列表变得更淡 */
+:deep(.global-disabled) {
+  opacity: 0.5;
+}
+:deep(.unselectable-file:hover > td),
+:deep(.unselectable-file:hover) {
+  background-color: transparent !important;
+}
 
 /* 文件名拖拽 & 重命名 */
 .rename-container {
@@ -1265,7 +1430,100 @@ watch(
   color: var(--fb-text-sub);
   font-size: 13px;
 }
+.footer-left-area {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+}
 
+.footer-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px; /* 增加间距 */
+  flex-shrink: 0;
+  position: relative; /* 为气泡定位提供参考（如果需要） */
+}
+.cmd-trigger-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+/* [新增] 聊天气泡样式 */
+.chat-bubble {
+  position: absolute;
+  bottom: 100%; /* 位于按钮上方 */
+  left: 50%;
+  transform: translateX(-50%); /* 水平居中 */
+  margin-bottom: 15px; /* 留出箭头空间 */
+
+  width: 260px;
+  background-color: var(--fb-bubble-bg);
+  color: var(--fb-bubble-text);
+  border-radius: 8px;
+  padding: 10px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+  z-index: 100;
+  pointer-events: auto; /* 允许点击内部关闭按钮 */
+}
+
+/* 气泡箭头 */
+.bubble-arrow {
+  position: absolute;
+  bottom: -6px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 0;
+  height: 0;
+  border-left: 6px solid transparent;
+  border-right: 6px solid transparent;
+  border-top: 6px solid var(--fb-bubble-bg);
+}
+
+.bubble-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  font-weight: bold;
+  margin-bottom: 6px;
+  opacity: 0.9;
+}
+.bubble-close {
+  cursor: pointer;
+  transition: transform 0.2s;
+}
+.bubble-close:hover {
+  transform: scale(1.2);
+}
+
+.bubble-body {
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 4px;
+  padding: 6px;
+}
+.cmd-code {
+  font-family: monospace;
+  font-size: 11px;
+  word-break: break-all;
+  display: -webkit-box;
+  line-clamp: 3;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* 气泡动画 */
+.bubble-pop-enter-active,
+.bubble-pop-leave-active {
+  transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+.bubble-pop-enter-from,
+.bubble-pop-leave-to {
+  opacity: 0;
+  transform: translate(-50%, 10px) scale(0.9);
+}
 /* --- 拖拽上传遮罩 --- */
 .drag-overlay {
   position: absolute;

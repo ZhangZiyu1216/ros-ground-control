@@ -62,7 +62,7 @@
                 <!-- 编辑模式 -->
                 <div v-if="editingNodeId === node.id" class="launch-edit-row">
                   <el-button class="launch-path-button" @click.stop="openFileBrowser('launch')">
-                    {{ getDisplayPath(form.args) || '选择启动文件' }}
+                    {{ getDisplayPath(form.args, form.cmd) || '选择启动文件 / 启动命令' }}
                   </el-button>
                   <!-- 编辑 Launch 内容按钮 -->
                   <el-tooltip content="编辑 Launch 文件" placement="top">
@@ -71,13 +71,13 @@
                       type="primary"
                       plain
                       class="launch-content-edit-btn"
-                      :disabled="!getDisplayPath(form.args)"
+                      :disabled="form.cmd !== 'roslaunch' || !getDisplayPath(form.args)"
                       @click.stop="openLaunchEditor"
                     />
                   </el-tooltip>
                 </div>
                 <!-- 显示模式 -->
-                <p v-else class="launch-path">{{ getDisplayPath(node.args) }}</p>
+                <p v-else class="launch-path">{{ getDisplayPath(node.args, node.cmd) }}</p>
               </div>
 
               <template #footer>
@@ -189,7 +189,7 @@
               </template>
               <div class="card-body-content">
                 <el-button class="launch-path-button" @click="openFileBrowser('launch')">
-                  {{ getDisplayPath(form.args) || '选择launch文件' }}
+                  {{ getDisplayPath(form.args, form.cmd) || '选择launch文件 / 启动命令' }}
                 </el-button>
               </div>
               <template #footer>
@@ -447,30 +447,32 @@
       :initial-data="seqForm.id ? seqForm : null"
       @save="handleSequenceSave"
     />
+    <el-dialog
+      v-model="fileBrowserContext.visible"
+      class="file-browser-dialog"
+      destroy-on-close
+      :close-on-click-modal="false"
+      :show-close="false"
+      draggable
+      append-to-body
+    >
+      <div style="height: 100%; overflow: hidden">
+        <FileBrowser
+          :initial-path="fileBrowserContext.initialPath"
+          :initial-command-data="fileBrowserContext.commandData"
+          :backend-id="props.currentBackendId"
+          :allowed-extensions="fileBrowserContext.allowedExtensions"
+          :show-close="true"
+          :hide-footer="false"
+          :target-type="fileBrowserContext.targetType"
+          :enable-ros-command="fileBrowserContext.enableRosCommand"
+          @file-selected="handleFileSelected"
+          @cancel="handleCancel"
+          @close="fileBrowserContext.visible = false"
+        />
+      </div>
+    </el-dialog>
   </div>
-  <el-dialog
-    v-model="fileBrowserContext.visible"
-    class="file-browser-dialog"
-    destroy-on-close
-    :close-on-click-modal="false"
-    :show-close="false"
-    draggable
-    append-to-body
-  >
-    <div style="height: 100%; overflow: hidden">
-      <FileBrowser
-        :initial-path="fileBrowserContext.initialPath"
-        :backend-id="props.currentBackendId"
-        :allowed-extensions="fileBrowserContext.allowedExtensions"
-        :show-close="true"
-        :hide-footer="false"
-        :target-type="fileBrowserContext.targetType"
-        @file-selected="handleFileSelected"
-        @cancel="handleCancel"
-        @close="fileBrowserContext.visible = false"
-      />
-    </div>
-  </el-dialog>
 </template>
 
 <script setup>
@@ -525,7 +527,9 @@ const fileBrowserContext = reactive({
   mode: 'launch',
   targetType: 'file',
   targetData: null,
-  callback: null
+  callback: null,
+  enableRosCommand: false,
+  commandData: null // [新增] 用于回显 rosrun 等命令状态
 })
 
 // 编辑状态
@@ -554,10 +558,29 @@ const form = reactive({
 })
 
 // 辅助：获取显示路径
-const getDisplayPath = (nodeArgs) => {
-  if (Array.isArray(nodeArgs) && nodeArgs.length > 0) return nodeArgs[0]
-  return ''
+const getDisplayPath = (nodeArgs, nodeCmd = 'roslaunch') => {
+  if (!Array.isArray(nodeArgs) || nodeArgs.length === 0) return ''
+
+  // 1. Roslaunch 情况 (保持旧逻辑)
+  // 假设 nodeArgs[0] 是绝对路径
+  if (nodeCmd === 'roslaunch') {
+    return nodeArgs[0]
+  }
+
+  // 2. Rosrun / Rostopic / Bash 情况
+  const argsStr = nodeArgs[0]
+  const cwd = nodeArgs[1]
+
+  if (cwd) {
+    // 仅显示目录名的最后一部分，保持界面整洁
+    const shortCwd = cwd === '/' ? '/' : cwd.split('/').pop()
+    return `${nodeCmd} ${argsStr} (in .../${shortCwd})`
+  }
+
+  // 容错：如果没有 cwd
+  return `${nodeCmd} ${argsStr}`
 }
+
 // #endregion
 
 // #region 3. Node Actions (Start/Stop)
@@ -617,7 +640,7 @@ async function saveNode() {
     id: form.id || `node-${Date.now()}`,
     name: form.name,
     cmd: form.cmd,
-    args: [pathStr],
+    args: [...form.args],
     description: '',
     params: currentParams
   }
@@ -714,13 +737,31 @@ function openFileBrowser(mode, data = null) {
   fileBrowserContext.mode = mode
   fileBrowserContext.targetData = mode === 'param' ? data.paramObject : data
   fileBrowserContext.callback = mode === 'param' ? data.onSuccess : null
+  fileBrowserContext.commandData = null
 
   let currentPathStr = ''
   switch (mode) {
     case 'launch':
       fileBrowserContext.targetType = 'file'
       fileBrowserContext.allowedExtensions = ['.launch', '.launch.xml']
-      currentPathStr = getDisplayPath(form.args)
+      fileBrowserContext.enableRosCommand = true
+      // 尝试解析回显
+      if (form.cmd === 'roslaunch') {
+        currentPathStr = form.args[0]
+      } else {
+        // [核心逻辑] 处理 rosrun/rostopic 等的回显
+        // 约定结构: form.args = [ '参数字符串', '工作路径' ]
+        if (Array.isArray(form.args) && form.args.length > 1) {
+          currentPathStr = form.args[1] // 提取路径给 FileBrowser 导航
+          // [新增] 提取命令数据给 FileBrowser 回显气泡
+          fileBrowserContext.commandData = {
+            cmd: form.cmd,
+            argsStr: form.args[0]
+          }
+        } else {
+          currentPathStr = ''
+        }
+      }
       break
     case 'param':
       fileBrowserContext.targetType = 'file'
@@ -755,10 +796,28 @@ function openFileBrowser(mode, data = null) {
   fileBrowserContext.visible = true
 }
 
-function handleFileSelected(filePath) {
+function handleFileSelected(payload) {
+  // 检查是否为 ROS 命令对象
+  if (payload && payload.isCommand) {
+    if (fileBrowserContext.mode === 'launch') {
+      // 1. 设置命令类型 (如 'rostopic')
+      form.cmd = payload.cmd
+      // 2. 设置参数数组 [argStr, path]
+      // 确保 payload.args 是正确构建的数组
+      form.args = payload.args
+    }
+    fileBrowserContext.visible = false
+    console.log(`${form.cmd} ${form.args}`)
+    return
+  }
+
+  // 普通文件路径字符串
+  const filePath = payload
   if (!filePath) return
+
   switch (fileBrowserContext.mode) {
     case 'launch':
+      form.cmd = 'roslaunch'
       form.args = [filePath]
       break
     case 'param': {
@@ -1418,6 +1477,7 @@ watch(
 
 /* 启动/停止/保存按钮样式 */
 .node-list-panel .start-stop-btn {
+  font-size: 14px;
   border: none !important; /* 移除默认边框 */
   color: white !important; /* 强制白字 */
   font-weight: 600;
@@ -1482,6 +1542,7 @@ watch(
   font-weight: 600;
   border: none;
   transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+  font-size: 14px;
 }
 
 /* 1. 保存/添加按钮 (Primary) -> 蓝色渐变 */
