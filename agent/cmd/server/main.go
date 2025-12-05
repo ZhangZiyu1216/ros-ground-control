@@ -61,6 +61,8 @@ ExecStart=%s
 Restart=always
 RestartSec=3
 Environment=GIN_MODE=release
+Environment=GOGC=200
+OOMScoreAdjust=-1000
 
 [Install]
 WantedBy=multi-user.target

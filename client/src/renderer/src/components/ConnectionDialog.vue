@@ -416,40 +416,7 @@ const applyAndClose = async () => {
 
 <style scoped>
 /* ============================================
-   1. 变量定义 (Theme Variables)
-   ============================================ */
-.conn-form {
-  /* Light Mode */
-  --c-bg: #ffffff;
-  --c-card-bg: #f5f7fa;
-  --c-card-border: #e4e7ed;
-  --c-card-hover: #ecf5ff;
-  --c-primary: #409eff;
-  --c-text-main: #303133;
-  --c-text-sub: #909399;
-  --c-success-bg: rgba(103, 194, 58, 0.1);
-  --c-success-text: #67c23a;
-  --c-warn-bg: rgba(230, 162, 60, 0.1);
-  --c-warn-text: #e6a23c;
-}
-
-/* Dark Mode 适配 */
-:global(html.dark) .conn-form {
-  --c-bg: #1e1e20;
-  --c-card-bg: #2b2b2d;
-  --c-card-border: #414243;
-  --c-card-hover: rgba(64, 158, 255, 0.1);
-  --c-primary: #409eff;
-  --c-text-main: #e5eaf3;
-  --c-text-sub: #a3a6ad;
-  --c-success-bg: rgba(103, 194, 58, 0.15);
-  --c-success-text: #67c23a;
-  --c-warn-bg: rgba(230, 162, 60, 0.15);
-  --c-warn-text: #e6a23c;
-}
-
-/* ============================================
-   2. 模式选择 (Mode Cards)
+   1. 模式选择 (Mode Cards)
    ============================================ */
 .mode-selector {
   display: grid;
@@ -463,8 +430,8 @@ const applyAndClose = async () => {
   align-items: center;
   height: 40px;
   padding: 0 15px;
-  background-color: var(--c-card-bg);
-  border: 1px solid var(--c-card-border);
+  background-color: var(--panel-bg-color);
+  border: 1px solid var(--panel-border-color);
   border-radius: 6px;
   cursor: pointer;
   transition: all 0.2s ease;
@@ -472,13 +439,13 @@ const applyAndClose = async () => {
 }
 
 .mode-card:hover {
-  background-color: var(--c-card-hover);
-  border-color: var(--c-primary);
+  background-color: rgba(128, 128, 128, 0.05);
+  border-color: #409eff;
 }
 
 .mode-card.active {
-  background-color: rgba(64, 158, 255, 0.08);
-  border-color: var(--c-primary);
+  background-color: var(--bg-color);
+  border-color: #409eff;
 }
 
 .mode-card.is-disabled {
@@ -489,13 +456,13 @@ const applyAndClose = async () => {
 
 .card-icon-wrapper {
   font-size: 18px;
-  color: var(--c-text-sub);
+  color: var(--text-secondary); /* [修改] 全局变量 */
   margin-right: 10px;
   display: flex;
   align-items: center;
 }
 .mode-card.active .card-icon-wrapper {
-  color: var(--c-primary);
+  color: #409eff;
 }
 
 .card-text {
@@ -506,7 +473,7 @@ const applyAndClose = async () => {
 .card-title {
   font-weight: 600;
   font-size: 13px;
-  color: var(--c-text-main);
+  color: var(--text-primary); /* [修改] 全局变量 */
 }
 
 .active-indicator {
@@ -515,11 +482,11 @@ const applyAndClose = async () => {
   top: 0;
   bottom: 0;
   width: 3px;
-  background-color: var(--c-primary);
+  background-color: #409eff;
 }
 
 /* ============================================
-   3. 布局修复 (Flex Row & Label Alignment)
+   2. 布局修复 (Flex Row & Label Alignment)
    ============================================ */
 .form-body {
   min-height: 160px;
@@ -550,7 +517,7 @@ const applyAndClose = async () => {
 }
 .label-text {
   font-weight: 500;
-  color: var(--c-text-main);
+  color: var(--text-primary); /* [修改] 全局变量 */
 }
 
 /* Local 模式布局 */
@@ -564,11 +531,11 @@ const applyAndClose = async () => {
 }
 .local-port-hint {
   font-size: 12px;
-  color: var(--c-text-sub);
+  color: var(--text-secondary); /* [修改] 全局变量 */
 }
 
 /* ============================================
-   [修复] 4. 扫描状态灯与动画
+   3. 扫描状态灯与动画
    ============================================ */
 .scan-status-wrapper {
   height: 20px;
@@ -589,14 +556,14 @@ const applyAndClose = async () => {
 
 /* Loading 态 */
 .scan-status.loading {
-  background-color: var(--c-card-bg);
-  color: var(--c-text-sub);
+  background-color: var(--panel-bg-color); /* [修改] 全局变量 */
+  color: var(--text-secondary); /* [修改] 全局变量 */
 }
 
 /* Success 态 (发现设备) */
 .scan-status.success {
-  background-color: var(--c-success-bg);
-  color: var(--c-success-text);
+  background-color: rgba(103, 194, 58, 0.1);
+  color: #67c23a;
 }
 
 /* 呼吸圆点 */
@@ -625,33 +592,36 @@ const applyAndClose = async () => {
 }
 
 /* ============================================
-   5. 输入框样式统一 (Modern Input Styling)
+   4. 输入框样式统一 (Universal Input Styling)
    ============================================ */
-/* 强制覆盖所有输入组件 */
+/* [核心修复] 强制覆盖所有输入组件 - 使用全局变量 */
 .conn-form :deep(.el-input__wrapper),
 .conn-form :deep(.el-input-number__wrapper) {
-  background-color: var(--c-card-bg) !important;
+  background-color: var(--panel-bg-color) !important; /* [修改] 全局变量 */
   box-shadow: none !important;
-  border: 1px solid var(--c-card-border) !important;
+  border: 1px solid var(--panel-border-color) !important; /* [修改] 全局变量 */
+
   border-radius: 6px;
   padding: 0 11px;
   height: 32px; /* 固定高度 */
   transition: all 0.2s;
+
+  color: var(--text-primary) !important; /* [修改] 全局变量 */
 }
 
 /* Hover */
 .conn-form :deep(.el-input__wrapper:hover),
 .conn-form :deep(.el-input-number__wrapper:hover) {
-  background-color: var(--c-bg) !important;
-  border-color: var(--c-text-sub) !important;
+  background-color: var(--bg-color) !important; /* [修改] 全局变量 */
+  border-color: var(--text-secondary) !important; /* [修改] 全局变量 */
 }
 
 /* Focus */
 .conn-form :deep(.el-input__wrapper.is-focus),
 .conn-form :deep(.el-input-number__wrapper.is-focus) {
-  background-color: var(--c-bg) !important;
-  border-color: var(--c-primary) !important;
-  box-shadow: 0 0 0 1px var(--c-primary) !important;
+  background-color: var(--bg-color) !important; /* [修改] 全局变量 */
+  border-color: #409eff !important;
+  box-shadow: 0 0 0 1px #409eff !important;
 }
 
 /* 修复数字输入框按钮 */
@@ -664,11 +634,11 @@ const applyAndClose = async () => {
 }
 
 .input-icon {
-  color: var(--c-text-sub);
+  color: var(--text-secondary); /* [修改] 全局变量 */
 }
 
 /* ============================================
-   6. 其他组件 (Autocomplete, Footer)
+   5. 其他组件 (Autocomplete, Footer)
    ============================================ */
 /* 下拉项 */
 .device-item {
@@ -682,11 +652,11 @@ const applyAndClose = async () => {
   align-items: center;
   gap: 6px;
   font-weight: 500;
-  color: var(--c-text-main);
+  color: var(--text-primary); /* [修改] 全局变量 */
 }
 .device-ip {
   font-size: 12px;
-  color: var(--c-text-sub);
+  color: var(--text-secondary); /* [修改] 全局变量 */
   font-family: monospace;
 }
 
@@ -713,11 +683,12 @@ const applyAndClose = async () => {
   box-shadow: 0 5px 14px rgba(64, 158, 255, 0.4);
 }
 
-/* 强制 Label 占满整行 (Element Fix) */
+/* 强制 Label 占满整行 */
 :deep(.el-form-item__label) {
   width: 100%;
   display: block;
   line-height: 20px;
   margin-bottom: 6px !important;
+  color: var(--text-primary); /* [修改] 确保 Label 颜色也跟随主题 */
 }
 </style>

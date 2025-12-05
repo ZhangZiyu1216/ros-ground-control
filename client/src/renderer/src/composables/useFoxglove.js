@@ -23,7 +23,11 @@ const getDataStore = (backendId) => {
 
       // 订阅管理
       subscriptions: new Map(), // topic -> { count, subId }
-      subIdToTopicName: new Map() // subId -> topic
+      subIdToTopicName: new Map(), // subId -> topic
+
+      // 服务相关数据
+      services: ref([]),
+      nameToService: new Map() // serviceName -> serviceInfo
     })
   }
   return dataStores.get(backendId)
@@ -74,6 +78,18 @@ function generateDefaultValue(type, definitions) {
     obj[field.name] = value
   }
   return obj
+}
+
+// [新增] 更新服务列表 UI
+const updateServiceList = (store) => {
+  const list = Array.from(store.nameToService.values()).map((s) => ({
+    id: s.id,
+    name: s.name,
+    type: s.type, // e.g. "std_srvs/SetBool"
+    requestSchema: s.requestSchema, // Foxglove 协议直接提供了分离的 Schema
+    responseSchema: s.responseSchema
+  }))
+  store.services.value = list
 }
 
 // 辅助函数：简单的 ROS 风格 YAML 转换器
@@ -270,26 +286,53 @@ export function useFoxglove() {
     // Connection Graph: 话题活跃状态 (Liveness)
     client.on('connectionGraphUpdate', (graph) => {
       store.hasReceivedGraph = true
-      const graphState = store.topicGraphState
-
-      // 1. Removed Topics: 话题彻底消失（无发布也无订阅）
-      if (graph.removedTopics) {
-        graph.removedTopics.forEach((name) => {
-          // 直接删除统计信息，这将导致 updateTopicList 中获取不到 stats，isAlive 变为 false
-          graphState.delete(name)
-        })
-      }
-
-      // 2. Published Topics: 更新发布者数量
+      // 1. 清空当前图状态 (Discard old state)
+      // 我们直接清空 Map，只保留最新的快照数据
+      store.topicGraphState.clear()
+      // 2. 重建 Publishers 状态
       if (graph.publishedTopics) {
         graph.publishedTopics.forEach((t) => {
-          if (!graphState.has(t.name)) graphState.set(t.name, { pubCount: 0 })
-          graphState.get(t.name).pubCount = t.publisherIds.length
+          let stats = store.topicGraphState.get(t.name)
+          if (!stats) {
+            stats = { pubCount: 0, subCount: 0 }
+            store.topicGraphState.set(t.name, stats)
+          }
+          stats.pubCount = t.publisherIds.length
         })
       }
-
-      // [关键] 立即触发列表更新，重新计算 isAlive
+      // 3. 重建 Subscribers 状态
+      if (graph.subscribedTopics) {
+        graph.subscribedTopics.forEach((t) => {
+          let stats = store.topicGraphState.get(t.name)
+          if (!stats) {
+            stats = { pubCount: 0, subCount: 0 }
+            store.topicGraphState.set(t.name, stats)
+          }
+          stats.subCount = t.subscriberIds.length
+        })
+      }
+      // 4. 立即触发列表更新
       updateTopicList(store)
+    })
+
+    // [新增] 监听服务列表更新
+    client.on('advertiseServices', (services) => {
+      const store = getDataStore(backendId)
+      services.forEach((s) => {
+        store.nameToService.set(s.name, s)
+      })
+      updateServiceList(store)
+    })
+
+    client.on('unadvertiseServices', (serviceIds) => {
+      const store = getDataStore(backendId)
+      const idsToRemove = new Set(serviceIds)
+      for (const [name, s] of store.nameToService.entries()) {
+        if (idsToRemove.has(s.id)) {
+          store.nameToService.delete(name)
+        }
+      }
+      updateServiceList(store)
     })
 
     // Message Data
@@ -403,5 +446,56 @@ export function useFoxglove() {
     }
   }
 
-  return { getTopicsRef, getMessage, subscribe, getTopicTypeAndTemplate }
+  // [新增] 获取服务列表引用
+  const getServicesRef = (backendId) => {
+    ensureConnection(backendId)
+    return getDataStore(backendId).services
+  }
+
+  // [新增] 获取服务类型和请求模板
+  const getServiceTypeAndTemplate = (backendId, serviceName) => {
+    ensureConnection(backendId)
+    const store = getDataStore(backendId)
+    const service = store.nameToService.get(serviceName)
+
+    if (!service) {
+      return { type: '', template: '' }
+    }
+
+    try {
+      // 1. 解析 Request Schema
+      // Foxglove 协议通常分别提供 requestSchema 和 responseSchema
+      // 如果没有直接提供，可能需要处理 raw schema，但标准实现都会分离
+      const definitions = parseRosMsg(service.requestSchema, { ros2: false })
+
+      // 2. 找到根定义 (通常只有一个，就是 Request 结构体)
+      // 注意：服务请求类型的命名通常是 "Pkg/TypeRequest" 或直接是 "TypeRequest"
+      const rootDef = definitions[0]
+
+      if (!rootDef) return { type: service.type, template: '' }
+
+      // 3. 生成默认对象
+      const msgObj = generateDefaultValue(rootDef.name, definitions)
+
+      // 4. 转为 YAML
+      const templateStr = objectToYaml(msgObj).trimEnd()
+
+      return {
+        type: service.type,
+        template: templateStr
+      }
+    } catch (e) {
+      console.error('[Foxglove] Generate service template failed:', e)
+      return { type: service.type || '', template: '' }
+    }
+  }
+
+  return {
+    getTopicsRef,
+    getMessage,
+    subscribe,
+    getTopicTypeAndTemplate,
+    getServicesRef,
+    getServiceTypeAndTemplate
+  }
 }

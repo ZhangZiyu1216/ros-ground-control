@@ -44,8 +44,14 @@ export async function deployAgent(config, sender) {
     if (installFoxglove) {
       reportProgress(sender, 15, '正在通过网络安装系统依赖...')
 
-      // 包含所有依赖：基础工具 + 视频服务 + Foxglove
-      const packages = ['avahi-daemon', 'psmisc', 'net-tools', 'ros-noetic-foxglove-bridge']
+      // 包含所有依赖：基础工具 + Foxglove
+      const packages = [
+        'avahi-daemon',
+        'psmisc',
+        'net-tools',
+        'libcap2-bin',
+        'ros-noetic-foxglove-bridge'
+      ]
 
       const packageStr = packages.join(' ')
 
@@ -88,6 +94,14 @@ export async function deployAgent(config, sender) {
     await ssh.putFile(localBinary, remoteTempPath)
     await ssh.execCommand(`chmod +x ${remoteTempPath}`)
     await ssh.execCommand(`${sudoPrefix}mv ${remoteTempPath} ${remoteInstallPath}`)
+    const capResult = await ssh.execCommand(
+      `${sudoPrefix}setcap 'cap_sys_nice=+ep' ${remoteInstallPath}`
+    )
+    if (capResult.code !== 0) {
+      // 如果失败 (例如目标系统极简裁剪没有 setcap 命令)，我们记录警告但不阻断部署
+      // 因为 Agent 在没有此权限时依然可以运行 (只是 nice 只能设为正数)
+      console.warn('Setcap warning (High priority mode might fail):', capResult.stderr)
+    }
 
     // === 3. 配置服务 ===
     // 确保以登录用户身份运行，且加载 ROS 环境
@@ -99,6 +113,9 @@ After=network.target avahi-daemon.service
 ExecStart=${remoteInstallPath}
 Restart=always
 User=${username}
+AmbientCapabilities=CAP_SYS_NICE
+CapabilityBoundingSet=CAP_SYS_NICE
+
 Environment=HOME=${username === 'root' ? '/root' : '/home/' + username}
 Environment="PATH=/opt/ros/noetic/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 Environment="ROS_DISTRO=noetic"

@@ -201,366 +201,471 @@
 
         <div class="fleet-list-wrapper">
           <el-scrollbar height="100%">
-            <div class="agent-grid">
-              <div
-                v-for="agent in allAgents"
-                :key="agent.uniqueKey"
-                class="flip-container"
-                :class="{ 'is-flipped': flippedCards[agent.uniqueKey] }"
-              >
-                <div class="flipper">
-                  <!-- Front Side -->
-                  <div
-                    class="card-face front"
-                    :class="{
-                      'status-online': agent.status === 'ready',
-                      'status-offline': agent.status !== 'ready'
-                    }"
-                    @click="
-                      agent.status === 'ready' ? flipCard(agent.uniqueKey) : handleCardClick(agent)
-                    "
-                  >
-                    <div class="card-header">
-                      <div class="header-left">
-                        <div class="status-indicator" :class="agent.status"></div>
-                        <div class="id-text-group">
-                          <span class="agent-name">{{ agent.name }}</span>
-                          <span class="agent-address">{{ agent.ip }}:{{ agent.port }}</span>
-                        </div>
-                      </div>
-
-                      <!-- [需求1] ROS 状态胶囊 + 删除按钮 -->
-                      <div class="header-right-group">
-                        <!-- 仅 Ready 状态显示 -->
-                        <div
-                          v-if="agent.status === 'ready'"
-                          class="ros-control-group"
-                          :class="{
-                            'is-fully-active':
-                              agent.serviceStatus?.roscore === 'active' &&
-                              agent.serviceStatus?.bridge === 'active',
-                            'is-loading': agent.isStackLoading
-                          }"
-                          @click.stop="toggleRosStack(agent)"
-                        >
-                          <!-- Loading 遮罩 (居中显示) -->
-                          <div v-if="agent.isStackLoading" class="loading-overlay">
-                            <el-icon class="is-loading"><Loading /></el-icon>
-                          </div>
-
-                          <!-- 胶囊 1: CORE -->
+            <draggable
+              v-model="proxyBackends"
+              class="agent-grid"
+              item-key="settings.ip"
+              animation="300"
+              :delay="150"
+              :delay-on-touch-only="true"
+              chosen-class="drag-chosen"
+              ghost-class="drag-ghost"
+              drag-class="drag-active"
+            >
+              <!-- [核心] 这里的 element 是 savedBackends 里的原始配置项 -->
+              <template #item="{ element: backendItem, index }">
+                <div
+                  class="flip-container"
+                  :class="{ 'is-flipped': flippedCards[getAgentState(backendItem).uniqueKey] }"
+                >
+                  <div class="flipper">
+                    <!-- Front Side -->
+                    <div
+                      class="card-face front"
+                      :class="{
+                        'status-online': getAgentState(backendItem).status === 'ready',
+                        'status-offline': getAgentState(backendItem).status !== 'ready'
+                      }"
+                      @click="handleCardClickLogic(getAgentState(backendItem), index)"
+                    >
+                      <div class="card-header">
+                        <div class="header-left">
                           <div
-                            class="ros-pill"
-                            :class="{ active: agent.serviceStatus?.roscore === 'active' }"
-                          >
-                            <div class="pill-dot"></div>
-                            <span>Core</span>
+                            class="status-indicator"
+                            :class="getAgentState(backendItem).status"
+                          ></div>
+                          <div class="id-text-group">
+                            <span class="agent-name">{{ getAgentState(backendItem).name }}</span>
+                            <span class="agent-address"
+                              >{{ getAgentState(backendItem).ip }}:{{
+                                getAgentState(backendItem).port
+                              }}</span
+                            >
                           </div>
+                        </div>
 
-                          <!-- 胶囊 2: BRIDGE -->
+                        <!-- [需求1] ROS 状态胶囊 + 删除按钮 -->
+                        <div class="header-right-group">
+                          <!-- 仅 Ready 状态显示 -->
                           <div
-                            class="ros-pill"
-                            :class="{ active: agent.serviceStatus?.bridge === 'active' }"
+                            v-if="getAgentState(backendItem).status === 'ready'"
+                            class="ros-control-group"
+                            :class="{
+                              'is-fully-active':
+                                getAgentState(backendItem).serviceStatus?.roscore === 'active' &&
+                                getAgentState(backendItem).serviceStatus?.bridge === 'active',
+                              'is-loading': getAgentState(backendItem).isStackLoading
+                            }"
+                            @click.stop="toggleRosStack(getAgentState(backendItem))"
                           >
-                            <div class="pill-dot"></div>
-                            <span>Bridge</span>
-                          </div>
-                        </div>
-
-                        <!-- 删除按钮 -->
-                        <el-button
-                          v-if="agent.status !== 'ready'"
-                          link
-                          type="danger"
-                          size="small"
-                          class="del-btn"
-                          @click.stop="handleDelete(agent.originalIndex)"
-                        >
-                          <el-icon><Delete /></el-icon>
-                        </el-button>
-                      </div>
-                    </div>
-
-                    <div class="card-body">
-                      <template v-if="agent.status === 'ready'">
-                        <!-- 1. Info Section (Refactored) -->
-                        <div class="info-section">
-                          <!-- Top Line: Model + Arch -->
-                          <div class="info-primary-row">
-                            <span class="cpu-chip" :title="agent.sysInfo?.cpu_model">
-                              {{ agent.sysInfo?.cpu_model || 'Unknown CPU' }}
-                            </span>
-                            <span class="arch-badge">{{ agent.sysInfo?.arch || 'UNK' }}</span>
-                          </div>
-
-                          <!-- Bottom Line: Cores | Temp -->
-                          <div class="info-secondary-row">
-                            <span v-if="agent.sysInfo?.num_cpu" class="meta-item"
-                              >{{ agent.sysInfo.num_cpu }} Cores</span
-                            >
-                            <span v-if="agent.sysInfo?.num_cpu" class="meta-divider">|</span>
-                            <span
-                              class="meta-item temp"
-                              :class="{ hot: (agent.stats?.temperature || 0) > 70 }"
-                            >
-                              {{ Math.round(agent.stats?.temperature || 0) }}°C
-                            </span>
-                          </div>
-                        </div>
-
-                        <!-- 2. Split Layout (Rings | Stats) - 保持不变 -->
-                        <div class="monitor-split">
-                          <!-- Left: 3 Rings -->
-                          <div class="rings-col">
-                            <div class="ring-wrapper">
-                              <el-progress
-                                type="dashboard"
-                                :percentage="Math.round(agent.stats?.cpu_usage || 0)"
-                                :width="40"
-                                :stroke-width="3"
-                                :color="colors.cpu"
-                              >
-                                <template #default="{ percentage }"
-                                  ><span class="ring-val">{{ percentage }}%</span></template
-                                >
-                              </el-progress>
-                              <span class="ring-label">CPU</span>
-                            </div>
-                            <div class="ring-wrapper">
-                              <el-progress
-                                type="dashboard"
-                                :percentage="Math.round(agent.stats?.gpu_usage || 0)"
-                                :width="40"
-                                :stroke-width="3"
-                                :color="colors.gpu"
-                              >
-                                <template #default="{ percentage }"
-                                  ><span class="ring-val">{{ percentage }}%</span></template
-                                >
-                              </el-progress>
-                              <span class="ring-label">GPU</span>
-                            </div>
-                            <div class="ring-wrapper">
-                              <el-progress
-                                type="dashboard"
-                                :percentage="Math.round(agent.stats?.mem_usage || 0)"
-                                :width="40"
-                                :stroke-width="3"
-                                :color="colors.mem"
-                              >
-                                <template #default="{ percentage }"
-                                  ><span class="ring-val">{{ percentage }}%</span></template
-                                >
-                              </el-progress>
-                              <span class="ring-label">RAM</span>
-                            </div>
-                          </div>
-
-                          <!-- Right: Stats List -->
-                          <div class="stats-col">
-                            <div class="stat-row">
-                              <el-icon class="icon-down"><Download /></el-icon>
-                              <span class="stat-text">{{
-                                formatSpeed(agent.stats?.net_rx_rate)
-                              }}</span>
-                            </div>
-                            <div class="stat-row">
-                              <el-icon class="icon-up"><Upload /></el-icon>
-                              <span class="stat-text">{{
-                                formatSpeed(agent.stats?.net_tx_rate)
-                              }}</span>
-                            </div>
+                            <!-- Loading 遮罩 (居中显示) -->
                             <div
-                              class="stat-row"
-                              :class="{ 'disk-full': (agent.stats?.disk_usage || 0) > 90 }"
+                              v-if="getAgentState(backendItem).isStackLoading"
+                              class="loading-overlay"
                             >
-                              <el-icon class="icon-disk"><Files /></el-icon>
-                              <span class="stat-text"
-                                >{{ Math.round(agent.stats?.disk_usage || 0) }}% Disk</span
-                              >
+                              <el-icon class="is-loading"><Loading /></el-icon>
+                            </div>
+
+                            <!-- 胶囊 1: CORE -->
+                            <div
+                              class="ros-pill"
+                              :class="{
+                                active:
+                                  getAgentState(backendItem).serviceStatus?.roscore === 'active'
+                              }"
+                            >
+                              <div class="pill-dot"></div>
+                              <span>Core</span>
+                            </div>
+
+                            <!-- 胶囊 2: BRIDGE -->
+                            <div
+                              class="ros-pill"
+                              :class="{
+                                active:
+                                  getAgentState(backendItem).serviceStatus?.bridge === 'active'
+                              }"
+                            >
+                              <div class="pill-dot"></div>
+                              <span>Bridge</span>
                             </div>
                           </div>
-                        </div>
-                      </template>
 
-                      <template v-else>
-                        <div class="offline-state">
-                          <el-icon
-                            class="state-icon"
-                            :class="{ spin: agent.status === 'setting_up' }"
+                          <!-- 删除按钮 -->
+                          <el-button
+                            v-if="getAgentState(backendItem).status !== 'ready'"
+                            link
+                            type="danger"
+                            size="small"
+                            class="del-btn"
+                            @click.stop="handleDelete(index)"
                           >
-                            <component
-                              :is="agent.status === 'setting_up' ? Loading : SwitchButton"
-                            />
-                          </el-icon>
-                          <span class="state-text">{{ getStatusText(agent.status) }}</span>
-                          <div class="agent-ip">{{ agent.ip }}</div>
+                            <el-icon><Delete /></el-icon>
+                          </el-button>
                         </div>
-                      </template>
+                      </div>
+
+                      <div class="card-body">
+                        <template v-if="getAgentState(backendItem).status === 'ready'">
+                          <!-- 1. Info Section (Refactored) -->
+                          <div class="info-section">
+                            <!-- Top Line: Model + Arch -->
+                            <div class="info-primary-row">
+                              <span
+                                class="cpu-chip"
+                                :title="getAgentState(backendItem).sysInfo?.cpu_model"
+                              >
+                                {{ getAgentState(backendItem).sysInfo?.cpu_model || 'Unknown CPU' }}
+                              </span>
+                              <span class="arch-badge">{{
+                                getAgentState(backendItem).sysInfo?.arch || 'UNK'
+                              }}</span>
+                            </div>
+
+                            <!-- Bottom Line: Cores | Temp -->
+                            <div class="info-secondary-row">
+                              <span
+                                v-if="getAgentState(backendItem).sysInfo?.num_cpu"
+                                class="meta-item"
+                                >{{ getAgentState(backendItem).sysInfo.num_cpu }} Cores</span
+                              >
+                              <span
+                                v-if="getAgentState(backendItem).sysInfo?.num_cpu"
+                                class="meta-divider"
+                                >|</span
+                              >
+                              <span
+                                class="meta-item temp"
+                                :class="{
+                                  hot: (getAgentState(backendItem).stats?.temperature || 0) > 70
+                                }"
+                              >
+                                {{
+                                  Math.round(getAgentState(backendItem).stats?.temperature || 0)
+                                }}°C
+                              </span>
+                            </div>
+                          </div>
+
+                          <!-- 2. Split Layout (Rings | Stats) - 保持不变 -->
+                          <div class="monitor-split">
+                            <!-- Left: 3 Rings -->
+                            <div class="rings-col">
+                              <div class="ring-wrapper">
+                                <el-progress
+                                  type="dashboard"
+                                  :percentage="
+                                    Math.round(getAgentState(backendItem).stats?.cpu_usage || 0)
+                                  "
+                                  :width="40"
+                                  :stroke-width="3"
+                                  :color="colors.cpu"
+                                >
+                                  <template #default="{ percentage }"
+                                    ><span class="ring-val">{{ percentage }}%</span></template
+                                  >
+                                </el-progress>
+                                <span class="ring-label">CPU</span>
+                              </div>
+                              <div class="ring-wrapper">
+                                <el-progress
+                                  type="dashboard"
+                                  :percentage="
+                                    Math.round(getAgentState(backendItem).stats?.gpu_usage || 0)
+                                  "
+                                  :width="40"
+                                  :stroke-width="3"
+                                  :color="colors.gpu"
+                                >
+                                  <template #default="{ percentage }"
+                                    ><span class="ring-val">{{ percentage }}%</span></template
+                                  >
+                                </el-progress>
+                                <span class="ring-label">GPU</span>
+                              </div>
+                              <div class="ring-wrapper">
+                                <el-progress
+                                  type="dashboard"
+                                  :percentage="
+                                    Math.round(getAgentState(backendItem).stats?.mem_usage || 0)
+                                  "
+                                  :width="40"
+                                  :stroke-width="3"
+                                  :color="colors.mem"
+                                >
+                                  <template #default="{ percentage }"
+                                    ><span class="ring-val">{{ percentage }}%</span></template
+                                  >
+                                </el-progress>
+                                <span class="ring-label">RAM</span>
+                              </div>
+                            </div>
+
+                            <!-- Right: Stats List -->
+                            <div class="stats-col">
+                              <div class="stat-row">
+                                <el-icon class="icon-down"><Download /></el-icon>
+                                <span class="stat-text">{{
+                                  formatSpeed(getAgentState(backendItem).stats?.net_rx_rate)
+                                }}</span>
+                              </div>
+                              <div class="stat-row">
+                                <el-icon class="icon-up"><Upload /></el-icon>
+                                <span class="stat-text">{{
+                                  formatSpeed(getAgentState(backendItem).stats?.net_tx_rate)
+                                }}</span>
+                              </div>
+                              <div
+                                class="stat-row"
+                                :class="{
+                                  'disk-full':
+                                    (getAgentState(backendItem).stats?.disk_usage || 0) > 90
+                                }"
+                              >
+                                <el-icon class="icon-disk"><Files /></el-icon>
+                                <span class="stat-text"
+                                  >{{
+                                    Math.round(getAgentState(backendItem).stats?.disk_usage || 0)
+                                  }}% Disk</span
+                                >
+                              </div>
+                            </div>
+                          </div>
+                        </template>
+
+                        <template v-else>
+                          <div class="offline-state">
+                            <el-icon
+                              class="state-icon"
+                              :class="{ spin: getAgentState(backendItem).status === 'setting_up' }"
+                            >
+                              <component
+                                :is="
+                                  getAgentState(backendItem).status === 'setting_up'
+                                    ? Loading
+                                    : SwitchButton
+                                "
+                              />
+                            </el-icon>
+                            <span class="state-text">{{
+                              getStatusText(getAgentState(backendItem).status)
+                            }}</span>
+                            <div class="agent-ip">{{ getAgentState(backendItem).ip }}</div>
+                          </div>
+                        </template>
+                      </div>
+
+                      <div class="card-footer" @click.stop>
+                        <template v-if="getAgentState(backendItem).status === 'ready'">
+                          <el-button
+                            class="footer-btn primary"
+                            text
+                            bg
+                            @click="handleCardClick(getAgentState(backendItem), index)"
+                          >
+                            <el-icon><Monitor /></el-icon> 查看详情
+                          </el-button>
+                          <div class="footer-divider"></div>
+                          <el-button
+                            class="footer-btn danger"
+                            text
+                            bg
+                            @click="handleDisconnect(index)"
+                          >
+                            <el-icon><SwitchButton /></el-icon>
+                          </el-button>
+                        </template>
+                        <template v-else>
+                          <el-button class="footer-btn" text bg disabled>
+                            {{
+                              getAgentState(backendItem).status === 'setting_up'
+                                ? '连接中...'
+                                : '点击卡片连接'
+                            }}
+                          </el-button>
+                        </template>
+                      </div>
                     </div>
 
-                    <div class="card-footer" @click.stop>
-                      <template v-if="agent.status === 'ready'">
+                    <!-- Back Side (Split Columns) -->
+                    <!-- [需求2] 背面分为两列：节点和序列 -->
+                    <div
+                      class="card-face back"
+                      @click="flipCard(getAgentState(backendItem).uniqueKey)"
+                    >
+                      <div class="card-header back-header">
+                        <span>快速启动</span>
+                        <el-icon><Back /></el-icon>
+                      </div>
+
+                      <div class="split-body">
+                        <!-- Left: Nodes -->
+                        <div class="split-col border-right">
+                          <div class="col-title">节点</div>
+                          <el-scrollbar>
+                            <div class="mini-list">
+                              <template
+                                v-if="
+                                  getAgentState(backendItem).nodes &&
+                                  getAgentState(backendItem).nodes.length > 0
+                                "
+                              >
+                                <div
+                                  v-for="node in getAgentState(backendItem).nodes"
+                                  :key="node.id"
+                                  class="mini-item"
+                                  :class="{
+                                    'process-start':
+                                      getPendingState(
+                                        getAgentState(backendItem).uniqueKey,
+                                        node.id
+                                      ) === 'start',
+                                    'process-stop':
+                                      getPendingState(
+                                        getAgentState(backendItem).uniqueKey,
+                                        node.id
+                                      ) === 'stop',
+                                    'is-active': node.status === 'running' /* [新增] 运行状态类名 */
+                                  }"
+                                  @click.stop="toggleNode(getAgentState(backendItem), node)"
+                                >
+                                  <div class="mini-status" :class="node.status"></div>
+                                  <span class="mini-name" :title="node.name">{{ node.name }}</span>
+                                  <!-- 如果正在处理，显示 Loading 图标，否则显示播放/停止 -->
+                                  <el-icon
+                                    class="mini-action"
+                                    :class="{
+                                      'is-loading': getPendingState(
+                                        getAgentState(backendItem).uniqueKey,
+                                        node.id
+                                      ),
+                                      stop: node.status === 'running',
+                                      play: node.status !== 'running'
+                                    }"
+                                  >
+                                    <component
+                                      :is="
+                                        getPendingState(
+                                          getAgentState(backendItem).uniqueKey,
+                                          node.id
+                                        )
+                                          ? Loading
+                                          : node.status === 'running'
+                                            ? SwitchButton
+                                            : VideoPlay
+                                      "
+                                    />
+                                  </el-icon>
+                                </div>
+                              </template>
+                              <div v-else class="mini-empty">暂无节点</div>
+                            </div>
+                          </el-scrollbar>
+                        </div>
+
+                        <!-- Right: Sequences -->
+                        <div class="split-col">
+                          <div class="col-title">序列</div>
+                          <el-scrollbar>
+                            <div class="mini-list">
+                              <template
+                                v-if="
+                                  getAgentState(backendItem).sequences &&
+                                  getAgentState(backendItem).sequences.length > 0
+                                "
+                              >
+                                <div
+                                  v-for="seq in getAgentState(backendItem).sequences"
+                                  :key="seq.id"
+                                  class="mini-item"
+                                  :class="{
+                                    'process-start':
+                                      getPendingState(
+                                        getAgentState(backendItem).uniqueKey,
+                                        seq.id
+                                      ) === 'start',
+                                    'process-stop':
+                                      getPendingState(
+                                        getAgentState(backendItem).uniqueKey,
+                                        seq.id
+                                      ) === 'stop'
+                                  }"
+                                  @click.stop="toggleSequence(getAgentState(backendItem), seq)"
+                                >
+                                  <div
+                                    class="mini-status"
+                                    :class="seq._status === 'running' ? 'running' : 'stopped'"
+                                  ></div>
+                                  <span class="mini-name" :title="seq.name">{{ seq.name }}</span>
+                                  <el-icon
+                                    class="mini-action"
+                                    :class="{
+                                      'is-loading': getPendingState(
+                                        getAgentState(backendItem).uniqueKey,
+                                        seq.id
+                                      ),
+                                      stop: seq._status === 'running',
+                                      play: seq._status !== 'running'
+                                    }"
+                                  >
+                                    <component
+                                      :is="
+                                        getPendingState(
+                                          getAgentState(backendItem).uniqueKey,
+                                          seq.id
+                                        )
+                                          ? Loading
+                                          : seq._status === 'running'
+                                            ? SwitchButton
+                                            : VideoPlay
+                                      "
+                                    />
+                                  </el-icon>
+                                </div>
+                              </template>
+                              <div v-else class="mini-empty">暂无序列</div>
+                            </div>
+                          </el-scrollbar>
+                        </div>
+                      </div>
+
+                      <div class="card-footer back-footer" @click.stop>
                         <el-button
                           class="footer-btn primary"
                           text
                           bg
-                          @click="handleCardClick(agent)"
+                          @click="handleCardClick(getAgentState(backendItem))"
                         >
                           <el-icon><Monitor /></el-icon> 查看详情
                         </el-button>
-                        <div class="footer-divider"></div>
-                        <el-button
-                          class="footer-btn danger"
-                          text
-                          bg
-                          @click="handleDisconnect(agent)"
-                        >
-                          <el-icon><SwitchButton /></el-icon>
-                        </el-button>
-                      </template>
-                      <template v-else>
-                        <el-button class="footer-btn" text bg disabled>
-                          {{ agent.status === 'setting_up' ? '连接中...' : '点击卡片连接' }}
-                        </el-button>
-                      </template>
-                    </div>
-                  </div>
-
-                  <!-- Back Side (Split Columns) -->
-                  <!-- [需求2] 背面分为两列：节点和序列 -->
-                  <div class="card-face back" @click="flipCard(agent.uniqueKey)">
-                    <div class="card-header back-header">
-                      <span>快速启动</span>
-                      <el-icon><Back /></el-icon>
-                    </div>
-
-                    <div class="split-body">
-                      <!-- Left: Nodes -->
-                      <div class="split-col border-right">
-                        <div class="col-title">节点</div>
-                        <el-scrollbar>
-                          <div class="mini-list">
-                            <template v-if="agent.nodes && agent.nodes.length > 0">
-                              <div
-                                v-for="node in agent.nodes"
-                                :key="node.id"
-                                class="mini-item"
-                                :class="{
-                                  'process-start':
-                                    getPendingState(agent.uniqueKey, node.id) === 'start',
-                                  'process-stop':
-                                    getPendingState(agent.uniqueKey, node.id) === 'stop',
-                                  'is-active': node.status === 'running' /* [新增] 运行状态类名 */
-                                }"
-                                @click.stop="toggleNode(agent, node)"
-                              >
-                                <div class="mini-status" :class="node.status"></div>
-                                <span class="mini-name" :title="node.name">{{ node.name }}</span>
-                                <!-- 如果正在处理，显示 Loading 图标，否则显示播放/停止 -->
-                                <el-icon
-                                  class="mini-action"
-                                  :class="{
-                                    'is-loading': getPendingState(agent.uniqueKey, node.id),
-                                    stop: node.status === 'running',
-                                    play: node.status !== 'running'
-                                  }"
-                                >
-                                  <component
-                                    :is="
-                                      getPendingState(agent.uniqueKey, node.id)
-                                        ? Loading
-                                        : node.status === 'running'
-                                          ? SwitchButton
-                                          : VideoPlay
-                                    "
-                                  />
-                                </el-icon>
-                              </div>
-                            </template>
-                            <div v-else class="mini-empty">暂无节点</div>
-                          </div>
-                        </el-scrollbar>
                       </div>
-
-                      <!-- Right: Sequences -->
-                      <div class="split-col">
-                        <div class="col-title">序列</div>
-                        <el-scrollbar>
-                          <div class="mini-list">
-                            <template v-if="agent.sequences && agent.sequences.length > 0">
-                              <div
-                                v-for="seq in agent.sequences"
-                                :key="seq.id"
-                                class="mini-item"
-                                :class="{
-                                  'process-start':
-                                    getPendingState(agent.uniqueKey, seq.id) === 'start',
-                                  'process-stop':
-                                    getPendingState(agent.uniqueKey, seq.id) === 'stop'
-                                }"
-                                @click.stop="toggleSequence(agent, seq)"
-                              >
-                                <div
-                                  class="mini-status"
-                                  :class="seq._status === 'running' ? 'running' : 'stopped'"
-                                ></div>
-                                <span class="mini-name" :title="seq.name">{{ seq.name }}</span>
-                                <el-icon
-                                  class="mini-action"
-                                  :class="{
-                                    'is-loading': getPendingState(agent.uniqueKey, seq.id),
-                                    stop: seq._status === 'running',
-                                    play: seq._status !== 'running'
-                                  }"
-                                >
-                                  <component
-                                    :is="
-                                      getPendingState(agent.uniqueKey, seq.id)
-                                        ? Loading
-                                        : seq._status === 'running'
-                                          ? SwitchButton
-                                          : VideoPlay
-                                    "
-                                  />
-                                </el-icon>
-                              </div>
-                            </template>
-                            <div v-else class="mini-empty">暂无序列</div>
-                          </div>
-                        </el-scrollbar>
-                      </div>
-                    </div>
-
-                    <div class="card-footer back-footer" @click.stop>
-                      <el-button class="footer-btn primary" text bg @click="handleCardClick(agent)">
-                        <el-icon><Monitor /></el-icon> 查看详情
-                      </el-button>
                     </div>
                   </div>
                 </div>
-              </div>
+              </template>
 
-              <div class="flip-container add-container">
-                <div class="add-card">
-                  <div class="add-option" @click="$emit('add')">
-                    <div class="add-icon-circle">
-                      <el-icon><Plus /></el-icon>
+              <template #footer>
+                <div class="flip-container add-container">
+                  <div class="add-card">
+                    <div class="add-option" @click="$emit('add')">
+                      <div class="add-icon-circle">
+                        <el-icon><Plus /></el-icon>
+                      </div>
+                      <span class="add-title">新建连接</span>
+                      <span class="add-desc">手动输入 IP</span>
                     </div>
-                    <span class="add-title">新建连接</span>
-                    <span class="add-desc">手动输入 IP</span>
-                  </div>
-                  <div class="add-divider-h"></div>
-                  <div class="add-option orange" @click="$emit('first-setup')">
-                    <div class="add-icon-circle">
-                      <el-icon><MagicStick /></el-icon>
+                    <div class="add-divider-h"></div>
+                    <div class="add-option orange" @click="$emit('first-setup')">
+                      <div class="add-icon-circle">
+                        <el-icon><MagicStick /></el-icon>
+                      </div>
+                      <span class="add-title">首次部署</span>
+                      <span class="add-desc">SSH 自动安装</span>
                     </div>
-                    <span class="add-title">首次部署</span>
-                    <span class="add-desc">SSH 自动安装</span>
                   </div>
                 </div>
-              </div>
-            </div>
+              </template>
+            </draggable>
           </el-scrollbar>
         </div>
 
@@ -597,11 +702,12 @@ import {
   Iphone,
   MagicStick
 } from '@element-plus/icons-vue'
+import draggable from 'vuedraggable'
 import ClusterSeqDialog from './ClusterSeqDialog.vue'
 import { useRobotStore } from '../store/robot'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
-const emit = defineEmits(['switch-view', 'add', 'first-setup', 'delete'])
+const emit = defineEmits(['switch-view', 'add', 'first-setup', 'delete', 'update:savedBackends'])
 const robotStore = useRobotStore()
 const props = defineProps({
   savedBackends: { type: Array, default: () => [] }
@@ -628,6 +734,55 @@ const refreshHostStats = () => {
 }
 
 // ------------------- 核心逻辑 -------------------
+
+// [新增] 代理 Computed，用于 draggable 的 v-model
+const proxyBackends = computed({
+  get: () => props.savedBackends,
+  set: (val) => emit('update:savedBackends', val)
+})
+
+// [新增] 状态映射函数 (替代原本的 allAgents computed)
+// 将原始配置 item 转换为包含 store 状态的完整对象
+const getAgentState = (item) => {
+  // 注意：item 是 savedBackends 里的原生对象 { settings: {...}, name: ... }
+  const activeClient = Object.values(robotStore.clients).find(
+    (c) => c.ip === item.settings.ip || (item.settings.id && c.id === item.settings.id)
+  )
+
+  if (activeClient) {
+    return {
+      ...activeClient,
+      name: item.name,
+      ip: item.settings.ip,
+      port: item.settings.port || 8080,
+      uniqueKey: activeClient.id,
+      status: activeClient.status,
+      settings: item.settings,
+      stats: activeClient.stats || {},
+      nodes: activeClient.nodes || [],
+      sequences: activeClient.sequences || [],
+      sysInfo: activeClient.sysInfo || {},
+      serviceStatus: activeClient.serviceStatus || { roscore: 'unknown', bridge: 'unknown' },
+      isStackLoading: activeClient.isStackLoading || false
+    }
+  } else {
+    // 离线/未连接对象
+    return {
+      id: item.settings.id,
+      ip: item.settings.ip,
+      port: item.settings.port || 8080,
+      name: item.name,
+      status: 'disconnected',
+      uniqueKey: item.settings.ip, // Fallback key
+      settings: item.settings,
+      stats: {},
+      nodes: [],
+      sequences: [],
+      sysInfo: {},
+      serviceStatus: { roscore: 'unknown', bridge: 'unknown' }
+    }
+  }
+}
 
 const allAgents = computed(() => {
   return props.savedBackends.map((item, index) => {
@@ -927,11 +1082,23 @@ const toggleSequence = async (agent, seq) => {
   }
 }
 
-const handleDisconnect = (agent) =>
-  emit('switch-view', { index: agent.originalIndex, action: 'disconnect' })
-const handleCardClick = (agent) => {
-  if (agent.status === 'ready') emit('switch-view', { index: agent.originalIndex, action: 'jump' })
-  else emit('switch-view', { index: agent.originalIndex, action: 'connect' })
+const handleDisconnect = (index) => {
+  emit('switch-view', { index: index, action: 'disconnect' })
+}
+const handleCardClick = (agent, index) => {
+  if (agent.status === 'ready') {
+    emit('switch-view', { index: index, action: 'jump' })
+  } else {
+    emit('switch-view', { index: index, action: 'connect' })
+  }
+}
+const handleCardClickLogic = (agent, index) => {
+  if (agent.status === 'ready') {
+    flipCard(agent.uniqueKey)
+  } else {
+    // 复用上面的 handleCardClick 逻辑
+    handleCardClick(agent, index)
+  }
 }
 const handleDelete = (index) => emit('delete', index)
 
@@ -2128,8 +2295,49 @@ onUnmounted(() => {
 .back-footer {
   height: 36px;
 }
+/* 1. 占位符 (Ghost) - 目标位置的虚线框 */
+.drag-ghost {
+  border-radius: 16px;
+  border: 2px dashed rgba(64, 158, 255, 0.6);
+  background: transparent !important;
+  box-shadow: none !important;
+  opacity: 1;
+}
 
-/* Add New Card */
+.drag-ghost .flipper {
+  opacity: 0;
+  visibility: hidden;
+}
+
+/* 2. 被选中/拖拽中的元素 (Chosen) - "提起来"的效果 */
+.drag-chosen {
+  background: transparent !important;
+  opacity: 1 !important;
+}
+
+/* 关键：将阴影和变换只加在内部的 flipper 上，因为它才有圆角和实际背景 */
+.drag-chosen .flipper {
+  /* 稍微放大并增加一点点旋转，增加物理悬浮感 */
+  transform: scale(1.02);
+  background: transparent !important;
+  z-index: 9999; /* 保证在最上层 */
+}
+
+/* 3. 正在拖拽时的鼠标样式 */
+.drag-active {
+  cursor: grabbing;
+}
+
+/* Grid 布局修正 (保持不变) */
+.agent-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 20px;
+  padding: 10px;
+  padding-bottom: 40px;
+}
+
+/* Add Card (保持不变) */
 .add-container {
   height: 220px;
 }

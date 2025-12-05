@@ -151,19 +151,38 @@
             <!-- Case: rosservice -->
             <div v-else-if="cmdType === 'rosservice'" key="rosservice" class="form-group">
               <el-form-item label="服务名称">
-                <el-input v-model="params.service" placeholder="/spawn" class="modern-input">
+                <!-- [修改] 自动补全服务名 -->
+                <el-autocomplete
+                  v-model="params.service"
+                  :fetch-suggestions="querySearchServices"
+                  placeholder="/spawn"
+                  class="modern-input"
+                  trigger-on-focus
+                  clearable
+                  @select="handleServiceSelect"
+                  @blur="handleServiceChange"
+                >
                   <template #prefix
                     ><el-icon class="input-icon"><MagicStick /></el-icon
                   ></template>
-                </el-input>
+                  <template #default="{ item }">
+                    <div class="topic-suggestion-item">
+                      <span class="topic-name">{{ item.value }}</span>
+                      <span class="topic-type">{{ item.type }}</span>
+                    </div>
+                  </template>
+                </el-autocomplete>
               </el-form-item>
-              <el-form-item label="请求参数 (YAML List)">
+
+              <el-form-item label="请求参数 (YAML Dictionary)">
+                <!-- [修改] 改为 Textarea 以支持多行 YAML 显示 -->
                 <el-input
                   v-model="params.serviceArgs"
-                  placeholder="[x, y, theta, name]"
-                  class="modern-input"
+                  type="textarea"
+                  :rows="3"
+                  placeholder="x: 1.0&#10;y: 2.0&#10;name: 'turtle2'"
+                  class="modern-textarea"
                 >
-                  <template #prefix><span class="text-icon">{}</span></template>
                 </el-input>
               </el-form-item>
             </div>
@@ -241,7 +260,8 @@ const props = defineProps({
   currentBackendId: { type: String, default: '' }
 })
 const emit = defineEmits(['update:modelValue', 'confirm'])
-const { getTopicTypeAndTemplate, getTopicsRef } = useFoxglove()
+const { getTopicTypeAndTemplate, getTopicsRef, getServicesRef, getServiceTypeAndTemplate } =
+  useFoxglove()
 const topicsList = getTopicsRef(props.currentBackendId)
 
 const visible = computed({
@@ -300,6 +320,42 @@ const handleTopicSelect = (item) => {
   handleTopicChange()
 }
 
+// [新增] 服务列表与搜索
+const servicesList = getServicesRef(props.currentBackendId)
+
+const querySearchServices = (queryString, cb) => {
+  const list = servicesList.value || []
+  const results = queryString
+    ? list.filter((s) => s.name.toLowerCase().includes(queryString.toLowerCase()))
+    : list
+
+  cb(
+    results.map((s) => ({
+      value: s.name,
+      type: s.type
+    }))
+  )
+}
+
+// [新增] 服务选择回调
+const handleServiceSelect = (item) => {
+  params.service = item.value
+  handleServiceChange()
+}
+
+// [新增] 服务自动填充
+const handleServiceChange = () => {
+  if (cmdType.value !== 'rosservice' || !params.service || !props.currentBackendId) return
+
+  const info = getServiceTypeAndTemplate(props.currentBackendId, params.service)
+
+  // 自动填入参数 (Service 不需要填 type 字段到 UI 上，因为 rostopic 命令行需要 type 而 rosservice 不需要)
+  // rosservice call /service_name "args"
+  if (info.template && !params.serviceArgs) {
+    params.serviceArgs = info.template
+  }
+}
+
 // 1. 生成参数字符串 (不包含命令本身)
 const argsPart = computed(() => {
   switch (cmdType.value) {
@@ -327,9 +383,21 @@ const argsPart = computed(() => {
 
     case 'rosservice': {
       if (!params.service) return null
-      const safeArgs = params.serviceArgs.replace(/'/g, "'\\''")
-      return `call ${params.service} "${safeArgs}"`
+      let rawServiceArgs = params.serviceArgs || ''
+      // 1. 如果为空，默认为空字典 {}
+      if (!rawServiceArgs.trim()) {
+        rawServiceArgs = '{}'
+      }
+      // 2. 转义处理 (针对双引号包裹环境)
+      const safeServiceArgs = rawServiceArgs
+        .replace(/\\/g, '\\\\') // 转义反斜杠
+        .replace(/"/g, '\\"') // 转义双引号
+        .replace(/\$/g, '\\$') // 转义美元符
+        .replace(/`/g, '\\`') // 转义反引号
+      // 3. 使用双引号包裹
+      return `call ${params.service} "${safeServiceArgs}"`
     }
+
     case 'bash':
       if (!params.raw) return null
       return params.raw
@@ -341,7 +409,9 @@ const argsPart = computed(() => {
 // 生成预览命令
 const fullPreview = computed(() => {
   if (!argsPart.value) return '等待输入参数...'
-  return `${cmdType.value} ${argsPart.value}`
+
+  if (cmdType.value === 'bash') return `${argsPart.value}`
+  else return `${cmdType.value} ${argsPart.value}`
 })
 
 const confirm = () => {
@@ -356,59 +426,34 @@ const confirm = () => {
 
 <style scoped>
 /* ============================================
-   1. 变量定义
+   1. 布局容器
    ============================================ */
 .dialog-body {
-  /* [核心] 使用 Flex 列布局 */
   display: flex;
   flex-direction: column;
-  /* [核心] 给定一个合适的高度，防止跳动 */
-  height: 400px;
-  padding-bottom: 0; /* 底部padding由gap处理 */
-  gap: 15px; /* 各个大块之间的间距 */
-  /* Light Mode */
-  --c-bg: #ffffff;
-  --c-card-bg: #f5f7fa;
-  /* [修改] 加深浅色模式边框，确保肉眼可见 */
-  --c-card-border: #dcdfe6;
-  --c-primary: #409eff;
-  --c-text-main: #303133;
-  --c-text-sub: #909399;
-  /* 终端配色 (Light 模式下也保持深色终端) */
-  --c-term-bg: #1e1e1e;
-  --c-term-text: #50fa7b;
+  height: 480px; /* 固定高度 */
+  padding-bottom: 0;
+  gap: 15px;
+
+  /* [修改] 不再定义本地变量，直接使用 App.vue 的全局变量 */
+  color: var(--text-primary);
 }
 
-/* Dark Mode 适配 */
-:global(html.dark) .dialog-body {
-  --c-bg: #1e1e20;
-  --c-card-bg: #2b2b2d;
-  --c-card-border: #414243;
-  --c-primary: #409eff;
-  --c-text-main: #e5eaf3;
-  --c-text-sub: #a3a6ad;
-  --c-term-bg: #000000;
-  --c-term-text: #50fa7b;
-}
-
+/* 表单滚动区 */
 .form-scroll-area {
-  flex: 1; /* 占据剩余空间 */
-  overflow-y: auto; /* 超出则滚动 */
+  flex: 1;
+  overflow-y: auto;
   overflow-x: hidden;
-  padding-right: 5px; /* 预留滚动条空间 */
-  min-height: 0; /* 防止 Flex 子项溢出 */
-
-  /* 增加一点内边距防止输入框阴影被切 */
-  padding-left: 2px;
+  padding-right: 5px;
+  min-height: 0;
+  padding-left: 2px; /* 防止 focus 阴影被切 */
   padding-top: 2px;
 }
-
-/* 美化滚动条 */
 .form-scroll-area::-webkit-scrollbar {
   width: 4px;
 }
 .form-scroll-area::-webkit-scrollbar-thumb {
-  background: var(--c-card-border);
+  background: var(--divider-color); /* 使用全局分割线颜色 */
   border-radius: 2px;
 }
 
@@ -417,13 +462,14 @@ const confirm = () => {
    ============================================ */
 .type-selector {
   display: flex;
-  background-color: var(--c-card-bg);
+  /* [修改] 使用全局面板背景 */
+  background-color: var(--panel-bg-color);
   padding: 4px;
   border-radius: 8px;
-  margin-bottom: 20px;
-  border: 1px solid var(--c-card-border);
-  flex-shrink: 0; /* 禁止压缩 */
-  margin-bottom: 0; /* 由 gap 控制 */
+  /* [修改] 使用全局面板边框 */
+  border: 1px solid var(--panel-border-color);
+  flex-shrink: 0;
+  margin-bottom: 0;
 }
 
 .type-item {
@@ -436,22 +482,20 @@ const confirm = () => {
   border-radius: 6px;
   font-size: 13px;
   font-weight: 500;
-  color: var(--c-text-sub);
+  color: var(--text-secondary); /* 全局次要文字 */
   cursor: pointer;
   transition: all 0.2s;
 }
 
 .type-item:hover {
-  color: var(--c-text-main);
-  background-color: rgba(0, 0, 0, 0.03);
-}
-:global(html.dark) .type-item:hover {
-  background-color: rgba(255, 255, 255, 0.05);
+  color: var(--text-primary);
+  background-color: rgba(128, 128, 128, 0.1); /* 通用 hover */
 }
 
 .type-item.active {
-  background-color: var(--c-bg);
-  color: var(--c-primary);
+  /* [修改] 激活态背景使用全局背景色 (形成凹凸感) */
+  background-color: var(--bg-color);
+  color: #409eff;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
   font-weight: 600;
 }
@@ -460,54 +504,63 @@ const confirm = () => {
 }
 
 /* ============================================
-   3. 表单样式
+   3. 表单样式与输入框覆盖
    ============================================ */
 :deep(.el-form-item) {
-  margin-bottom: 16px; /* 减小表单项间距 */
+  margin-bottom: 16px;
 }
-/* 强制 Label 样式 */
 :deep(.el-form-item__label) {
   font-size: 13px;
-  color: var(--c-text-main);
+  color: var(--text-primary); /* 全局主要文字 */
   padding-bottom: 6px !important;
   line-height: 1.2;
 }
 
-/* 输入框统一覆盖 */
+/* [核心修复] 输入框统一覆盖 - 使用全局变量 */
 .cmd-form :deep(.el-input__wrapper),
 .cmd-form :deep(.el-textarea__inner) {
-  background-color: var(--c-card-bg) !important;
+  /* [关键] 背景色使用 panel-bg-color (深色模式下是深灰，浅色下是浅灰) */
+  background-color: var(--panel-bg-color) !important;
   box-shadow: none !important;
-  border: 1px solid var(--c-card-border) !important;
+  /* [关键] 边框使用 panel-border-color */
+  border: 1px solid var(--panel-border-color) !important;
+
   border-radius: 6px;
   transition: all 0.2s;
   padding: 5px 11px !important;
   min-height: 32px;
   line-height: 1.5;
+
+  /* [关键] 文字颜色 */
+  color: var(--text-primary) !important;
 }
+
+/* Hover */
 .cmd-form :deep(.el-input__wrapper:hover),
 .cmd-form :deep(.el-textarea__inner:hover) {
-  background-color: var(--c-bg) !important;
-  border-color: var(--c-text-sub) !important;
+  background-color: var(--bg-color) !important; /* 悬浮稍微变亮/变暗 */
+  border-color: var(--text-secondary) !important;
 }
+
+/* Focus */
 .cmd-form :deep(.el-input__wrapper.is-focus),
 .cmd-form :deep(.el-textarea__inner:focus) {
-  background-color: var(--c-bg) !important;
-  border-color: var(--c-primary) !important;
-  box-shadow: 0 0 0 1px var(--c-primary) !important;
+  background-color: var(--bg-color) !important;
+  border-color: #409eff !important;
+  box-shadow: 0 0 0 1px #409eff !important;
 }
 
 .input-icon {
   font-size: 16px;
-  color: var(--c-text-sub);
+  color: var(--text-secondary);
 }
 .text-icon {
   font-weight: bold;
-  color: var(--c-text-sub);
+  color: var(--text-secondary);
   font-family: monospace;
 }
 
-/* 布局 */
+/* 布局类 */
 .form-row {
   display: flex;
   gap: 15px;
@@ -522,7 +575,7 @@ const confirm = () => {
   align-items: center;
   gap: 8px;
   background: rgba(64, 158, 255, 0.08);
-  color: var(--c-primary);
+  color: #409eff;
   padding: 8px 12px;
   border-radius: 6px;
   font-size: 12px;
@@ -533,36 +586,30 @@ const confirm = () => {
   color: #e6a23c;
 }
 
-/* Checkbox */
-.checkbox-wrapper {
-  margin-top: -10px;
-}
-
+/* Loop Control */
 .loop-control-row {
   display: flex;
   align-items: center;
   margin-top: -5px;
-  height: 32px; /* 占位高度防止跳动 */
+  height: 32px;
 }
-
 .rate-input-wrapper {
   display: flex;
   align-items: center;
   margin-left: 15px;
   gap: 8px;
 }
-
 .rate-label {
   font-size: 12px;
-  color: var(--c-text-sub);
+  color: var(--text-secondary);
 }
 
-/* 频率数字输入框微调 */
+/* 数字输入框微调 */
 .rate-number-input {
   width: 100px;
 }
 .rate-number-input :deep(.el-input__wrapper) {
-  padding: 2px 8px !important; /* 进一步压缩高度 */
+  padding: 2px 8px !important;
   height: 24px;
   min-height: 24px;
 }
@@ -571,13 +618,16 @@ const confirm = () => {
   line-height: 24px;
   font-size: 12px;
 }
+
+/* YAML 编辑器字体 */
 .modern-textarea :deep(.el-textarea__inner) {
   font-family: 'Consolas', 'Monaco', monospace;
   font-size: 12px;
-  white-space: pre; /* 保留空白和换行 */
-  overflow-x: auto; /* 允许横向滚动 */
+  white-space: pre;
+  overflow-x: auto;
 }
 
+/* 下拉建议项 */
 .topic-suggestion-item {
   display: flex;
   justify-content: space-between;
@@ -585,17 +635,15 @@ const confirm = () => {
   width: 100%;
   padding: 4px 0;
 }
-
 .topic-name {
   font-weight: 500;
-  color: var(--c-text-main);
+  color: var(--text-primary);
   font-size: 13px;
 }
-
 .topic-type {
   font-size: 11px;
-  color: var(--c-text-sub);
-  font-family: monospace; /* 消息类型用等宽字体更好看 */
+  color: var(--text-secondary);
+  font-family: monospace;
   margin-left: 10px;
 }
 
@@ -603,15 +651,15 @@ const confirm = () => {
    4. 终端预览 (Terminal)
    ============================================ */
 .terminal-preview {
-  flex-shrink: 0; /* 禁止压缩 */
-  margin-top: 0; /* 由 gap 控制 */
-  /* [核心] 强制应用背景色变量，若变量失效则回退到黑色 */
-  background-color: var(--c-term-bg, #1e1e1e);
+  flex-shrink: 0;
+  margin-top: 0;
+  /* 终端始终保持深色，不随主题变白，所以这里硬编码深色值 */
+  background-color: #1e1e1e;
   border-radius: 8px;
   overflow: auto;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-  border: 1px solid var(--c-card-border);
-  height: 80px;
+  border: 1px solid var(--panel-border-color);
+  height: 100px;
 }
 
 .terminal-header {
@@ -649,9 +697,9 @@ const confirm = () => {
   font-family: 'Consolas', 'Monaco', monospace;
   font-size: 13px;
   line-height: 1.5;
-  color: var(--c-term-text);
+  color: #50fa7b; /* 终端绿，始终保持 */
   word-break: break-all;
-  min-height: 40px; /* 防止内容为空时高度塌陷 */
+  min-height: 40px;
 }
 .prompt {
   color: #bd93f9;
@@ -662,18 +710,15 @@ const confirm = () => {
   color: rgba(255, 255, 255, 0.3);
   font-style: italic;
 }
-
-/* [核心] 光标动画修复 */
 .cursor {
   display: inline-block;
   width: 8px;
   height: 14px;
-  background-color: var(--c-term-text); /* 实心光标比下划线更明显 */
+  background-color: #50fa7b;
   vertical-align: middle;
-  animation: blink 1s step-end infinite; /* 使用 step-end 让闪烁更像终端 */
+  animation: blink 1s step-end infinite;
   opacity: 0.7;
 }
-
 @keyframes blink {
   0%,
   100% {
@@ -700,6 +745,7 @@ const confirm = () => {
 .action-btn.confirm {
   background: linear-gradient(135deg, #409eff, #337ecc);
   border: none;
+  color: white; /* 确保文字是白色 */
   box-shadow: 0 3px 10px rgba(64, 158, 255, 0.3);
 }
 .action-btn.confirm:hover {
@@ -723,18 +769,5 @@ const confirm = () => {
 .fade-slide-leave-to {
   opacity: 0;
   transform: translateX(-5px);
-}
-</style>
-
-<style>
-html.dark .el-autocomplete-suggestion__wrap {
-  background-color: #2b2b2d; /* 与 --c-card-bg 一致 */
-  border: 1px solid #414243;
-}
-html.dark .el-autocomplete-suggestion__list li {
-  color: #e5eaf3;
-}
-html.dark .el-autocomplete-suggestion__list li:hover {
-  background-color: rgba(64, 158, 255, 0.1);
 }
 </style>

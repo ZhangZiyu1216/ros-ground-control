@@ -65,6 +65,7 @@
             @add="openAddDialog"
             @first-setup="openFirstTimeSetupDialog"
             @delete="deleteBackend"
+            @update:saved-backends="handleReorder"
           />
           <!-- 模式 B: 详情模式 -->
           <Dashboard
@@ -124,7 +125,7 @@
             </el-button>
           </template>
 
-          <!-- Popover 内容 (保持不变) -->
+          <!-- Popover 内容 -->
           <div class="backend-list-container">
             <el-scrollbar max-height="280px">
               <!-- 固定总览项 -->
@@ -145,51 +146,61 @@
                   <el-icon><Check /></el-icon>
                 </div>
               </div>
-              <div
-                v-for="(item, index) in savedBackends"
-                :key="index"
-                class="backend-item"
-                :class="{ 'is-active': isActiveBackend(item), 'is-disabled': isAnyLoading }"
-                @click="!isAnyLoading && switchToBackend(item)"
+
+              <!-- 2. 可拖拽的连接列表 -->
+              <draggable
+                v-model="savedBackends"
+                item-key="settings.ip"
+                animation="200"
+                ghost-class="ghost-item"
+                @end="saveBackendsToStore"
               >
-                <div class="status-dot-container">
-                  <div class="list-status-dot" :class="getItemStatus(item)"></div>
-                </div>
-                <div class="backend-info">
-                  <div class="backend-name">{{ getBackendDisplayName(item) }}</div>
-                  <div class="backend-detail">
-                    {{ item.settings.mode === 'local' ? '127.0.0.1' : item.settings.ip }}
+                <template #item="{ element: item, index }">
+                  <div
+                    class="backend-item"
+                    :class="{ 'is-active': isActiveBackend(item), 'is-disabled': isAnyLoading }"
+                    @click="!isAnyLoading && switchToBackend(item)"
+                  >
+                    <div class="status-dot-container">
+                      <div class="list-status-dot" :class="getItemStatus(item)"></div>
+                    </div>
+                    <div class="backend-info">
+                      <div class="backend-name">{{ getBackendDisplayName(item) }}</div>
+                      <div class="backend-detail">
+                        {{ item.settings.mode === 'local' ? '127.0.0.1' : item.settings.ip }}
+                      </div>
+                    </div>
+                    <div class="backend-actions" @click.stop>
+                      <el-button
+                        v-if="!isBackendRunning(item)"
+                        link
+                        class="action-icon del"
+                        @click="deleteBackend(index)"
+                        ><el-icon> <Delete /> </el-icon
+                      ></el-button>
+                      <el-button
+                        v-if="getItemStatus(item) === 'ready'"
+                        link
+                        class="action-icon stop"
+                        @click="handleManualDisconnect(item)"
+                        ><el-icon> <SwitchButton /> </el-icon
+                      ></el-button>
+                      <el-button
+                        v-if="!isBackendRunning(item)"
+                        link
+                        class="action-icon edit"
+                        @click="openEditDialog(index, item)"
+                        ><el-icon> <Edit /> </el-icon
+                      ></el-button>
+                    </div>
+                    <div v-if="isActiveBackend(item)" class="active-check">
+                      <el-icon>
+                        <Check />
+                      </el-icon>
+                    </div>
                   </div>
-                </div>
-                <div class="backend-actions" @click.stop>
-                  <el-button
-                    v-if="!isBackendRunning(item)"
-                    link
-                    class="action-icon del"
-                    @click="deleteBackend(index)"
-                    ><el-icon> <Delete /> </el-icon
-                  ></el-button>
-                  <el-button
-                    v-if="getItemStatus(item) === 'ready'"
-                    link
-                    class="action-icon stop"
-                    @click="handleManualDisconnect(item)"
-                    ><el-icon> <SwitchButton /> </el-icon
-                  ></el-button>
-                  <el-button
-                    v-if="!isBackendRunning(item)"
-                    link
-                    class="action-icon edit"
-                    @click="openEditDialog(index, item)"
-                    ><el-icon> <Edit /> </el-icon
-                  ></el-button>
-                </div>
-                <div v-if="isActiveBackend(item)" class="active-check">
-                  <el-icon>
-                    <Check />
-                  </el-icon>
-                </div>
-              </div>
+                </template>
+              </draggable>
             </el-scrollbar>
             <div
               class="add-buttons-row"
@@ -313,6 +324,7 @@ import InfoDialog from '../components/InfoDialog.vue'
 import { useRobotStore } from '../store/robot'
 import { useConnection } from '../composables/useConnection.js'
 import { ElMessage, ElMessageBox, ElNotification } from 'element-plus'
+import draggable from 'vuedraggable'
 import {
   Grid,
   Monitor,
@@ -864,6 +876,12 @@ async function handleAutoStartService() {
   if (appSettings.value.autoStartRos) await connectServices()
 }
 
+// [新增] 处理排序更新
+const handleReorder = async (newList) => {
+  savedBackends.value = newList
+  await saveBackendsToStore()
+}
+
 // [新增] 滚轮切换逻辑
 // 1. 构建一个扁平化的可切换列表 [Overview, ...SavedBackends]
 const switchableList = computed(() => {
@@ -936,8 +954,15 @@ const handleAppReset = async () => {
   location.reload()
 }
 
-const saveBackendsToStore = async () =>
-  window.api.setConfig('saved_backends', toRaw(savedBackends.value))
+const saveBackendsToStore = async () => {
+  try {
+    // 这种方式最暴力但也最安全，确保传给后端的是纯数据
+    const plainData = JSON.parse(JSON.stringify(savedBackends.value))
+    await window.api.setConfig('saved_backends', plainData)
+  } catch (e) {
+    console.error('Failed to save backends:', e)
+  }
+}
 // #endregion
 
 // #region 5. Lifecycle
@@ -997,19 +1022,6 @@ const getStatusProps = (status) => {
 }
 const roscoreProps = computed(() => getStatusProps(roscoreStatus.value))
 const rosbridgeProps = computed(() => getStatusProps(rosbridgeStatus.value))
-
-/*
-watch([roscoreStatus, rosbridgeStatus], ([nR, nB], [oR, oB]) => {
-  if ((oR === 'connected' || oB === 'connected') && nR !== 'connected' && nB !== 'connected') {
-    ElNotification({
-      title: 'System Stopped',
-      message: 'ROS 服务已停止',
-      type: 'info',
-      duration: 2000
-    })
-  }
-})
-*/
 // #endregion
 </script>
 
@@ -1197,11 +1209,12 @@ watch([roscoreStatus, rosbridgeStatus], ([nR, nB], [oR, oB]) => {
   flex: 1; /* 占据左侧容器的剩余空间 */
   min-width: 0; /* [关键] 允许按钮被压缩 */
   max-width: 100%; /* 不超过父容器 */
+  background: transparent !important;
 }
 
 .current-conn-btn:hover {
   transform: scale(1.02);
-  background: transparent;
+  background: transparent !important;
 }
 
 /* 连接按钮内的文字截断 */
@@ -1536,9 +1549,30 @@ watch([roscoreStatus, rosbridgeStatus], ([nR, nB], [oR, oB]) => {
   transform: scale(1.02);
 }
 
-/* ============================================
-   View Transition Animations
-   ============================================ */
+.ghost-item {
+  opacity: 0.5;
+  background: rgba(64, 158, 255, 0.2);
+  border: 1px dashed #409eff;
+}
+.draggable-item {
+  cursor: grab; /* 提示可拖拽 */
+}
+.draggable-item:active {
+  cursor: grabbing;
+}
+.drag-handle {
+  display: flex;
+  align-items: center;
+  color: #909399;
+  margin-right: 6px;
+  cursor: grab;
+  opacity: 0.4;
+  transition: opacity 0.2s;
+}
+.backend-item:hover .drag-handle {
+  opacity: 1;
+}
+
 .view-fade-enter-active,
 .view-fade-leave-active {
   transition: all 0.5s cubic-bezier(0.25, 0.8, 0.25, 1);
@@ -1712,7 +1746,7 @@ html.dark .el-divider.backend-list-header .el-divider__text {
 .backend-actions .el-button.action-icon {
   font-size: 14px;
   padding: 6px;
-  margin: 0 2px;
+  margin: 0 -4px;
   border-radius: 4px;
 }
 
@@ -1770,5 +1804,12 @@ html.dark .el-divider.backend-list-header .el-divider__text {
   color: white;
   transform: none;
   box-shadow: 0 4px 12px rgba(255, 153, 0, 0.3);
+}
+
+.active-check {
+  display: flex;
+  align-items: center;
+  margin-right: 2px;
+  margin-left: 12px;
 }
 </style>

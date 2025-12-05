@@ -306,45 +306,22 @@ onMounted(() => {
 
 <style scoped>
 /* ============================================
-   1. 变量定义
+   1. 遮罩层 (全覆盖)
    ============================================ */
-.setup-form {
-  --c-bg: #ffffff;
-  --c-card-bg: #f5f7fa;
-  --c-card-border: #e4e7ed;
-  --c-primary: #409eff;
-  --c-text-main: #303133;
-  --c-text-sub: #909399;
-}
-:global(html.dark) .setup-form {
-  --c-bg: #1e1e20;
-  --c-card-bg: #2b2b2d;
-  --c-card-border: #414243;
-  --c-primary: #409eff;
-  --c-text-main: #e5eaf3;
-  --c-text-sub: #a3a6ad;
-}
-
-/* ============================================
-   [修复1] 遮罩层 (全覆盖)
-   ============================================ */
-/* 这里的 trick 是利用 :deep 选中 el-dialog 的 body/header/footer 父级 */
-/* 但最稳妥的方式是直接把 overlay 设为 absolute 并撑满整个 dialog 相对定位容器 */
-
-/* 强制 dialog 容器相对定位，并且溢出隐藏以便裁剪遮罩 */
+/* 强制 dialog 容器相对定位 */
 :deep(.el-dialog) {
   position: relative !important;
   overflow: hidden !important;
 }
 
 .progress-overlay-fixed {
-  position: absolute; /* 相对于 el-dialog */
+  position: absolute;
   top: 0;
   left: 0;
   width: 100%;
   height: 100%;
-  z-index: 9999; /* 确保在最上层 */
-  background: rgba(255, 255, 255, 0.85);
+  z-index: 9999;
+  background: rgba(255, 255, 255, 0.85); /* 保持浅色半透明，或使用 panel-bg */
   backdrop-filter: blur(8px);
   display: flex;
   justify-content: center;
@@ -356,109 +333,100 @@ onMounted(() => {
 
 .progress-card {
   text-align: center;
-  /* 增加一点背景卡片感 */
-  background: var(--c-bg);
+  background: var(--bg-color); /* [修改] 全局变量 */
   padding: 30px;
   border-radius: 12px;
-  border: 1px solid var(--c-card-border);
+  border: 1px solid var(--panel-border-color); /* [修改] 全局变量 */
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
 }
 .progress-title {
   margin: 15px 0 5px;
   font-size: 18px;
-  color: var(--c-text-main);
+  color: var(--text-primary); /* [修改] 全局变量 */
 }
 .progress-desc {
   font-size: 14px;
-  color: var(--c-text-sub);
+  color: var(--text-secondary); /* [修改] 全局变量 */
   margin: 0;
 }
 
 /* ============================================
-   [修复3] 输入框样式统一 (Universal Input Styling)
+   2. 输入框样式统一
    ============================================ */
-
-/* 1. 核心容器覆盖：针对所有类型的输入组件 wrapper */
-/* 包括: 普通输入框、自动补全、下拉框、数字输入框 */
 .setup-form :deep(.el-input__wrapper),
 .setup-form :deep(.el-select__wrapper),
 .setup-form :deep(.el-textarea__inner) {
-  /* 强制使用变量背景色 (浅灰) */
-  background-color: var(--c-card-bg) !important;
-  /* 强制移除默认阴影，使用自定义实线边框 */
+  background-color: var(--panel-bg-color) !important; /* [修改] 全局变量 */
   box-shadow: none !important;
-  border: 1px solid var(--c-card-border) !important;
-  /* 统一形状 */
+  border: 1px solid var(--panel-border-color) !important; /* [修改] 全局变量 */
   border-radius: 6px;
   padding: 4px 8px;
   height: 28px;
   transition: all 0.2s;
+  color: var(--text-primary) !important; /* [修改] 确保文字颜色正确 */
 }
 
-/* 2. 悬浮状态 (Hover) */
+/* Hover */
 .setup-form :deep(.el-input__wrapper:hover),
 .setup-form :deep(.el-select__wrapper:hover) {
-  background-color: var(--c-bg) !important; /* 悬浮变亮 */
-  border-color: var(--c-text-sub) !important;
+  background-color: var(--bg-color) !important; /* [修改] 全局变量 */
+  border-color: var(--text-secondary) !important; /* [修改] 全局变量 */
 }
 
-/* 3. 聚焦状态 (Focus) */
+/* Focus */
 .setup-form :deep(.el-input__wrapper.is-focus),
 .setup-form :deep(.el-select__wrapper.is-focused) {
-  background-color: var(--c-bg) !important;
-  border-color: var(--c-primary) !important;
-  box-shadow: 0 0 0 1px var(--c-primary) !important; /* 聚焦光圈 */
+  background-color: var(--bg-color) !important; /* [修改] 全局变量 */
+  border-color: #409eff !important;
+  box-shadow: 0 0 0 1px #409eff !important;
 }
 
-/* 4. 修复 Input Number (SSH 端口) */
+/* 数字输入框 */
 .setup-form :deep(.el-input-number) {
   width: 100%;
 }
-/* 调整内部文字位置，避开按钮 */
 .setup-form :deep(.el-input-number .el-input__wrapper) {
   padding-left: 12px !important;
   padding-right: 50px !important;
   padding-top: 1px !important;
   padding-bottom: 1px !important;
 }
-/* 去除默认的按钮背景和边框 */
 .setup-form :deep(.el-input-number__decrease),
 .setup-form :deep(.el-input-number__increase) {
   background: transparent;
-  border-left: 1px solid var(--c-card-border);
-  color: var(--c-text-sub);
-  width: 32px; /* 加宽按钮点击区域 */
+  border-left: 1px solid var(--panel-border-color); /* [修改] 全局变量 */
+  color: var(--text-secondary); /* [修改] 全局变量 */
+  width: 32px;
 }
 .setup-form :deep(.el-input-number__increase) {
-  border-bottom: 1px solid var(--c-card-border);
+  border-bottom: 1px solid var(--panel-border-color); /* [修改] 全局变量 */
 }
-/* 按钮 Hover */
 .setup-form :deep(.el-input-number__decrease:hover),
 .setup-form :deep(.el-input-number__increase:hover) {
-  color: var(--c-primary);
+  color: #409eff;
   background-color: rgba(64, 158, 255, 0.1);
 }
 
-/* 5. 修复 Select (目标架构) */
+/* Select */
 .setup-form :deep(.el-select__wrapper) {
-  padding: 4px 12px; /* 修正 Select 内部 padding */
+  padding: 4px 12px;
 }
 
-/* 6. 图标颜色适配 */
+/* Icons */
 .setup-form :deep(.el-input__prefix-inner),
 .setup-form :deep(.el-select__prefix) {
-  color: var(--c-text-sub);
+  color: var(--text-secondary); /* [修改] 全局变量 */
 }
 
 /* ============================================
-   [修复4] 标签对齐与 Loading
+   3. 标签与 Loading
    ============================================ */
-/* 强制 Label 占满宽度 */
 :deep(.el-form-item__label) {
   width: 102.5%;
   display: block;
   line-height: 20px;
   margin-bottom: 8px !important;
+  color: var(--text-primary); /* [修改] 全局变量 */
 }
 
 .label-row {
@@ -469,7 +437,7 @@ onMounted(() => {
 }
 .label-text {
   font-weight: 500;
-  color: var(--c-text-main);
+  color: var(--text-primary); /* [修改] 全局变量 */
 }
 
 .scan-status {
@@ -479,8 +447,8 @@ onMounted(() => {
   font-size: 12px;
   padding: 2px 8px;
   border-radius: 4px;
-  background: var(--c-card-bg);
-  color: var(--c-text-sub);
+  background: var(--panel-bg-color); /* [修改] 全局变量 */
+  color: var(--text-secondary); /* [修改] 全局变量 */
 }
 .scan-status.success {
   background: rgba(103, 194, 58, 0.1);
@@ -488,7 +456,7 @@ onMounted(() => {
 }
 .scan-status.loading {
   background: rgba(144, 147, 153, 0.1);
-  color: var(--c-text-sub);
+  color: var(--text-secondary);
 }
 
 .status-dot {
@@ -500,7 +468,7 @@ onMounted(() => {
 }
 
 /* ============================================
-   其他组件样式
+   4. 其他组件
    ============================================ */
 /* Info Card */
 .info-card {
@@ -513,17 +481,17 @@ onMounted(() => {
   margin-bottom: 24px;
 }
 .info-icon {
-  color: var(--c-primary);
+  color: #409eff;
   font-size: 18px;
   margin-top: 2px;
 }
 .info-text {
   font-size: 13px;
-  color: var(--c-text-main);
+  color: var(--text-primary);
   line-height: 1.5;
-}
+} /* [修改] 全局变量 */
 
-/* Layout Helper */
+/* Layout */
 .form-row {
   display: flex;
   gap: 16px;
@@ -532,37 +500,37 @@ onMounted(() => {
   flex: 1;
 }
 .input-icon {
-  color: var(--c-text-sub);
-}
+  color: var(--text-secondary);
+} /* [修改] 全局变量 */
 
 /* Feature Card */
 .feature-card {
   display: flex;
   align-items: center;
   padding: 12px 16px;
-  background-color: var(--c-card-bg);
-  border: 1px solid var(--c-card-border);
+  background-color: var(--panel-bg-color); /* [修改] 全局变量 */
+  border: 1px solid var(--panel-border-color); /* [修改] 全局变量 */
   border-radius: 8px;
   cursor: pointer;
   transition: all 0.2s;
   margin-top: 10px;
 }
 .feature-card:hover {
-  border-color: var(--c-primary);
+  border-color: #409eff;
 }
 .feature-card.active {
   background-color: rgba(64, 158, 255, 0.08);
-  border-color: var(--c-primary);
+  border-color: #409eff;
 }
 .feature-icon {
   font-size: 20px;
-  color: var(--c-text-sub);
+  color: var(--text-secondary);
   margin-right: 12px;
   display: flex;
   align-items: center;
 }
 .feature-card.active .feature-icon {
-  color: var(--c-primary);
+  color: #409eff;
 }
 .feature-content {
   flex: 1;
@@ -570,42 +538,19 @@ onMounted(() => {
 .feature-title {
   font-size: 14px;
   font-weight: 500;
-  color: var(--c-text-main);
+  color: var(--text-primary);
   margin-bottom: 2px;
-}
+} /* [修改] 全局变量 */
 .feature-desc {
   font-size: 12px;
-  color: var(--c-text-sub);
-}
+  color: var(--text-secondary);
+} /* [修改] 全局变量 */
 
 /* Footer */
-/* [新增] 底部布局样式 */
 .dialog-footer-row {
   display: flex;
   justify-content: space-between;
   align-items: center;
-}
-
-.progress-overlay {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(255, 255, 255, 0.9);
-  z-index: 10;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-}
-.progress-content {
-  text-align: center;
-  width: 200px;
-}
-.progress-text {
-  margin-top: 15px;
-  color: #606266;
-  font-size: 14px;
 }
 .dialog-actions {
   display: flex;
@@ -620,6 +565,7 @@ onMounted(() => {
 .action-btn.confirm {
   background: linear-gradient(135deg, #409eff, #337ecc);
   border: none;
+  color: white; /* [修改] 确保白字 */
   box-shadow: 0 3px 10px rgba(64, 158, 255, 0.3);
 }
 .action-btn.confirm:hover {
@@ -627,7 +573,7 @@ onMounted(() => {
   box-shadow: 0 5px 14px rgba(64, 158, 255, 0.4);
 }
 
-/* Device Autocomplete */
+/* Autocomplete Item */
 .device-item {
   display: flex;
   justify-content: space-between;
@@ -639,13 +585,13 @@ onMounted(() => {
   align-items: center;
   gap: 6px;
   font-weight: 500;
-  color: var(--c-text-main);
-}
+  color: var(--text-primary);
+} /* [修改] 全局变量 */
 .device-ip {
   font-size: 12px;
-  color: var(--c-text-sub);
+  color: var(--text-secondary);
   font-family: monospace;
-}
+} /* [修改] 全局变量 */
 
 .fade-enter-active,
 .fade-leave-active {

@@ -23,6 +23,7 @@ type QuickNode struct {
 	Args        []string    `json:"args"`        // ["my_pkg", "lidar.launch"]
 	Description string      `json:"description"` // 备注
 	Params      []ParamFile `json:"params"`      // 关联的参数文件列表
+	Nice        int         `json:"nice"`        // 保存优先级设置
 }
 
 var (

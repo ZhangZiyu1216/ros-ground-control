@@ -826,7 +826,8 @@ export const useRobotStore = defineStore('robot', () => {
       await client.api.post('/proc/start', {
         id: node.name,
         cmd: node.cmd || 'roslaunch',
-        args: node.args || []
+        args: node.args || [],
+        nice: typeof node.nice === 'number' ? node.nice : 0
       })
     } catch (e) {
       if (target) target.status = 'error'

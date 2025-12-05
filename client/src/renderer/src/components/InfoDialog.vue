@@ -171,27 +171,7 @@ const activeTab = ref('guide')
 
 <style scoped>
 /* ============================================
-   1. 变量与基础
-   ============================================ */
-.info-dialog {
-  --i-bg: #ffffff;
-  --i-card-bg: #f8f9fa;
-  --i-text-main: #303133;
-  --i-text-sub: #909399;
-  --i-primary: #409eff;
-  --i-border: #e4e7ed;
-}
-:global(html.dark) .info-dialog {
-  --i-bg: #1e1e20;
-  --i-card-bg: #2b2b2d;
-  --i-text-main: #e5eaf3;
-  --i-text-sub: #a3a6ad;
-  --i-primary: #409eff;
-  --i-border: #414243;
-}
-
-/* ============================================
-   2. Hero Header (头部)
+   1. Hero Header (头部)
    ============================================ */
 .hero-header {
   text-align: center;
@@ -250,15 +230,16 @@ const activeTab = ref('guide')
   font-size: 22px;
   font-weight: 800;
   letter-spacing: 1px;
+  /* 渐变色保持独特风格，不使用全局变量 */
   background: linear-gradient(135deg, #303133 0%, #606266 100%);
-  background-clip: text;
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
+  background-clip: text;
 }
 :global(html.dark) .app-name {
   background: linear-gradient(135deg, #ffffff 0%, #a3a6ad 100%);
-  background-clip: text;
   -webkit-background-clip: text;
+  background-clip: text;
 }
 
 .version-badge {
@@ -268,41 +249,41 @@ const activeTab = ref('guide')
   font-weight: 700;
   border-radius: 4px;
   overflow: hidden;
-  border: 1px solid var(--i-border);
+  border: 1px solid var(--panel-border-color); /* [修改] 全局变量 */
 }
 .v-tag {
-  background: var(--i-primary);
+  background: #409eff;
   color: white;
   padding: 2px 6px;
 }
 .v-num {
-  background: var(--i-card-bg);
-  color: var(--i-text-sub);
+  background: var(--panel-bg-color); /* [修改] 全局变量 */
+  color: var(--text-secondary); /* [修改] 全局变量 */
   padding: 2px 6px;
 }
 
 .app-slogan {
   margin: 0;
   font-size: 13px;
-  color: var(--i-text-sub);
+  color: var(--text-secondary); /* [修改] 全局变量 */
   letter-spacing: 2px;
   text-transform: uppercase;
   opacity: 0.8;
 }
 
 /* ============================================
-   3. Tabs & Guide (快速上手)
+   2. Tabs & Guide (快速上手)
    ============================================ */
 .modern-tabs :deep(.el-tabs__nav-wrap::after) {
   height: 1px;
-  background-color: var(--i-border);
+  background-color: var(--panel-border-color); /* [修改] 全局变量 */
 }
 .modern-tabs :deep(.el-tabs__item) {
   font-size: 14px;
-  color: var(--i-text-sub);
+  color: var(--text-secondary); /* [修改] 全局变量 */
 }
 .modern-tabs :deep(.el-tabs__item.is-active) {
-  color: var(--i-primary);
+  color: #409eff;
   font-weight: 600;
 }
 
@@ -315,8 +296,8 @@ const activeTab = ref('guide')
   padding-left: 5px;
 }
 .timeline-card {
-  background: var(--i-card-bg);
-  border: 1px solid var(--i-border);
+  background: var(--panel-bg-color); /* [修改] 全局变量 */
+  border: 1px solid var(--panel-border-color); /* [修改] 全局变量 */
   border-radius: 8px;
   padding: 12px 16px;
   margin-top: 4px; /* 对齐时间轴点 */
@@ -324,7 +305,7 @@ const activeTab = ref('guide')
 }
 .timeline-card:hover {
   transform: translateX(4px);
-  border-color: var(--i-primary);
+  border-color: #409eff;
 }
 
 .step-header {
@@ -362,19 +343,19 @@ const activeTab = ref('guide')
 
 .step-title {
   font-weight: 600;
-  color: var(--i-text-main);
+  color: var(--text-primary); /* [修改] 全局变量 */
   font-size: 14px;
 }
 .step-content {
   font-size: 13px;
-  color: var(--i-text-sub);
+  color: var(--text-secondary); /* [修改] 全局变量 */
   line-height: 1.6;
 }
 
 /* 重点文字高亮 */
 .key-highlight {
   font-weight: 600;
-  color: var(--i-text-main);
+  color: var(--text-primary); /* [修改] 全局变量 */
   background: rgba(0, 0, 0, 0.05);
   padding: 0 4px;
   border-radius: 3px;
@@ -389,34 +370,26 @@ const activeTab = ref('guide')
   color: #409eff;
 }
 .icon-inline {
-  display: inline-flex; /* 使用 inline-flex 保证垂直居中 */
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  vertical-align: middle; /* 基线对齐调整 */
-
-  /* 强制限制大小，使其不大于文字 */
+  vertical-align: middle;
   font-size: 14px;
   width: 16px;
   height: 16px;
-
-  /* 微调位置和间距 */
   margin: 0 2px;
   position: relative;
   top: -1px;
-
-  /* (可选) 给图标加一点点颜色，使其更像是一个操作指引 */
-  color: var(--i-primary);
+  color: #409eff;
 }
-
-/* 确保内部 SVG 填满容器 */
 .icon-inline :deep(.el-icon) {
   width: 100%;
   height: 100%;
-  font-size: inherit; /* 继承外层定义的 14px */
+  font-size: inherit;
 }
 
 /* ============================================
-   4. About Section (技术规格)
+   3. About Section (技术规格)
    ============================================ */
 .about-container {
   padding: 10px 20px;
@@ -433,26 +406,26 @@ const activeTab = ref('guide')
   display: flex;
   flex-direction: column;
   padding: 15px;
-  background: var(--i-card-bg);
+  background: var(--panel-bg-color); /* [修改] 全局变量 */
   border-radius: 8px;
   border: 1px solid transparent;
   transition: all 0.3s;
 }
 .tech-item:hover {
-  background: var(--i-bg);
+  background: var(--bg-color); /* [修改] 全局变量 */
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
-  border-color: var(--i-border);
+  border-color: var(--panel-border-color); /* [修改] 全局变量 */
 }
 
 .tech-label {
   font-size: 12px;
-  color: var(--i-text-sub);
+  color: var(--text-secondary); /* [修改] 全局变量 */
   margin-bottom: 4px;
 }
 .tech-value {
   font-size: 14px;
   font-weight: 600;
-  color: var(--i-text-main);
+  color: var(--text-primary); /* [修改] 全局变量 */
   font-family: 'Consolas', monospace;
 }
 
@@ -481,13 +454,13 @@ const activeTab = ref('guide')
   text-align: center;
   margin-top: 30px;
   font-size: 12px;
-  color: var(--i-text-sub);
+  color: var(--text-secondary); /* [修改] 全局变量 */
   line-height: 1.5;
   opacity: 0.6;
 }
 
 /* ============================================
-   5. Footer
+   4. Footer
    ============================================ */
 .dialog-footer-centered {
   display: flex;

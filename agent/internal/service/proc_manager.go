@@ -1,7 +1,7 @@
 package service
 
 import (
-	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -25,6 +25,7 @@ type ProcessConfig struct {
 	Env         []string // 额外的环境变量
 	SetupScript string   // 启动脚本路径
 	RawArgs     bool     // 新增：是否使用原始参数模式 (不加引号，不转义)
+	Nice        int      // 新增：进程优先级 (-20 到 19，越小优先级越高)
 }
 
 // ExitCallback 回调函数
@@ -159,6 +160,7 @@ func (pm *ProcessManager) run(proc *MonitoredProcess) error {
 	var cmdBuilder strings.Builder
 	cmdBuilder.WriteString(sourceCmd)
 	cmdBuilder.WriteString(exportCmds)
+	cmdBuilder.WriteString("exec ")
 	cmdBuilder.WriteString(proc.config.CmdStr)
 
 	// 遍历参数，使用 %q 进行安全引用
@@ -194,6 +196,21 @@ func (pm *ProcessManager) run(proc *MonitoredProcess) error {
 	f, err := pty.Start(cmd)
 	if err != nil {
 		return err
+	}
+
+	if proc.config.Nice != 0 {
+		// syscall.PRIO_PROCESS = 0 (表示操作进程 ID)
+		// cmd.Process.Pid 是刚才启动的 bash 的 PID
+		// 注意：Setpriority 需要 Agent 拥有 CAP_SYS_NICE 才能设置负数
+		// 这里的 Setpriority 会修改 bash 的 nice 值
+		// 随后 bash 执行 exec roslaunch，roslaunch 会继承这个 nice 值
+		err := syscall.Setpriority(syscall.PRIO_PROCESS, cmd.Process.Pid, proc.config.Nice)
+		if err != nil {
+			// 记录警告但不阻断运行，方便排查权限问题
+			fmt.Printf("[ProcManager] Warning: Failed to set nice value to %d: %v\n", proc.config.Nice, err)
+		} else {
+			fmt.Printf("[ProcManager] Successfully set nice value to %d for PID %d\n", proc.config.Nice, cmd.Process.Pid)
+		}
 	}
 
 	proc.mu.Lock()
@@ -285,34 +302,29 @@ func (pm *ProcessManager) StopProcess(id string) error {
 	proc.mu.Unlock()
 
 	if cmd != nil && cmd.Process != nil {
-		// 获取进程组 ID (PGID)
-		// 因为 pty.Start 设置了 Setsid，所以 PID == PGID
-		pgid := cmd.Process.Pid
-
 		// --- 阶段 1: 发送 SIGINT (模拟 Ctrl+C) ---
 		// 使用负数 PGID 向整个进程组广播信号
-		log.Printf("[Proc] Stopping %s (PGID: %d) with SIGINT...", id, pgid)
-		syscall.Kill(-pgid, syscall.SIGINT)
-
+		log.Printf("[Proc] Stopping %s (PID: %d) with SIGINT...", id, cmd.Process.Pid)
+		cmd.Process.Signal(syscall.SIGINT)
 		// --- 启动协程进行“补刀” ---
 		go func() {
-			// 等待，看它死没死
 			time.Sleep(5 * time.Second)
-			// 检查是否还在 map 中 (如果 waitProcess 结束了，会从 map 中删除)
-			if _, stillRunning := pm.procs.Load(id); !stillRunning {
-				return // 已经正常退出了
-			}
-			// --- 阶段 2: 发送 SIGTERM (强制终止请求) ---
-			log.Printf("[Proc] %s still alive. Escalating to SIGTERM...", id)
-			syscall.Kill(-pgid, syscall.SIGTERM)
-			// 再等
-			time.Sleep(3 * time.Second)
+
 			if _, stillRunning := pm.procs.Load(id); !stillRunning {
 				return
 			}
-			// --- 阶段 3: 发送 SIGKILL ---
+
+			log.Printf("[Proc] %s still alive. Escalating to SIGTERM...", id)
+			cmd.Process.Signal(syscall.SIGTERM) // 修复：使用 Signal
+
+			time.Sleep(3 * time.Second)
+
+			if _, stillRunning := pm.procs.Load(id); !stillRunning {
+				return
+			}
+
 			log.Printf("[Proc] %s is stubborn. Escalating to SIGKILL!", id)
-			syscall.Kill(-pgid, syscall.SIGKILL)
+			cmd.Process.Signal(syscall.SIGKILL) // 修复：使用 Signal
 		}()
 	}
 	return nil
@@ -351,16 +363,90 @@ func (pm *ProcessManager) SignalProcess(id string, sig syscall.Signal) error {
 }
 
 func (pm *ProcessManager) streamOutput(id string, streamName string, reader io.Reader) {
-	scanner := bufio.NewScanner(reader)
-	for scanner.Scan() {
-		text := scanner.Text()
-		// 替换换行符以适配 xterm
-		formattedText := strings.ReplaceAll(text, "\n", "\r\n") + "\r\n"
-		connect.GlobalHub.Broadcast(connect.LogMessage{
-			ProcessID: id,
-			Stream:    streamName,
-			Data:      formattedText,
-		})
+	// 配置常量
+	const (
+		readBufferSize = 8 * 1024              // 每次从 PTY 读取的最大块 (8KB)
+		flushInterval  = 50 * time.Millisecond // 刷新频率 (20fps)
+		maxBufferBytes = 16 * 1024             // 发送缓冲区阈值 (16KB)
+	)
+
+	// 预分配读取缓冲区
+	readBuf := make([]byte, readBufferSize)
+
+	// 发送缓冲区 (使用 bytes.Buffer 代替 strings.Builder，性能更好)
+	var sendBuffer bytes.Buffer
+	// 预分配一定的容量，减少扩容
+	sendBuffer.Grow(maxBufferBytes)
+
+	// 定时器
+	timer := time.NewTimer(flushInterval)
+	defer timer.Stop()
+
+	// 定义刷新函数
+	flush := func() {
+		if sendBuffer.Len() > 0 {
+			// 只有在这里才转一次 string，且是大块数据
+			connect.GlobalHub.Broadcast(connect.LogMessage{
+				ProcessID: id,
+				Stream:    streamName,
+				Data:      sendBuffer.String(),
+			})
+			sendBuffer.Reset()
+		}
+		// 重置定时器
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		timer.Reset(flushInterval)
 	}
-	// 当 PTY 关闭时，Scanner 会停止，这里不需要额外处理错误
+
+	dataChan := make(chan []byte, 100)
+
+	// 1. 读取协程 (Producer)
+	go func() {
+		defer close(dataChan)
+		for {
+			n, err := reader.Read(readBuf)
+			if n > 0 {
+				// 复制数据 (因为 readBuf 会被复用)
+				// 这里虽然有一次 copy，但相比 scanner 的开销小得多
+				chunk := make([]byte, n)
+				copy(chunk, readBuf[:n])
+				dataChan <- chunk
+			}
+			if err != nil {
+				break
+			}
+		}
+	}()
+
+	// 2. 处理协程 (Consumer)
+	for {
+		select {
+		case chunk, ok := <-dataChan:
+			if !ok {
+				flush()
+				return
+			}
+
+			// 字节级替换 \n -> \r\n
+			// 优化：只有当包含 \n 时才替换
+			if bytes.Contains(chunk, []byte{'\n'}) {
+				// Replace 返回新的切片
+				chunk = bytes.ReplaceAll(chunk, []byte{'\n'}, []byte{'\r', '\n'})
+			}
+
+			sendBuffer.Write(chunk)
+
+			if sendBuffer.Len() >= maxBufferBytes {
+				flush()
+			}
+
+		case <-timer.C:
+			flush()
+		}
+	}
 }

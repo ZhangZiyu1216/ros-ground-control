@@ -48,6 +48,14 @@
                       <span v-else class="node-name">{{ node.name }}</span>
                     </div>
                   </div>
+                  <!-- [保持] 高优先级图标指示 -->
+                  <el-tooltip
+                    v-if="node.nice && node.nice < 0"
+                    content="高优先级运行"
+                    placement="top"
+                  >
+                    <el-icon class="high-priority-icon"><Top /></el-icon>
+                  </el-tooltip>
                   <el-icon
                     class="expand-arrow"
                     :class="{ 'is-active': expandedNodeIds.has(node.id) }"
@@ -69,10 +77,22 @@
                     <el-button
                       :icon="EditPen"
                       type="primary"
+                      circle
                       plain
                       class="launch-content-edit-btn"
                       :disabled="form.cmd !== 'roslaunch' || !getDisplayPath(form.args)"
                       @click.stop="openLaunchEditor"
+                    />
+                  </el-tooltip>
+                  <!-- [新增] 高级设置按钮 -->
+                  <el-tooltip content="高级启动选项" placement="top">
+                    <el-button
+                      class="setting-btn"
+                      circle
+                      plain
+                      :icon="Setting"
+                      size="small"
+                      @click.stop="openAdvancedSettings"
                     />
                   </el-tooltip>
                 </div>
@@ -191,6 +211,17 @@
                 <el-button class="launch-path-button" @click="openFileBrowser('launch')">
                   {{ getDisplayPath(form.args, form.cmd) || '选择launch文件 / 启动命令' }}
                 </el-button>
+                <!-- [新增] 高级设置按钮 -->
+                <el-tooltip content="高级启动选项" placement="top">
+                  <el-button
+                    class="setting-btn"
+                    circle
+                    plain
+                    :icon="Setting"
+                    size="small"
+                    @click.stop="openAdvancedSettings"
+                  />
+                </el-tooltip>
               </div>
               <template #footer>
                 <div class="card-footer">
@@ -440,13 +471,24 @@
         </div>
       </div>
     </div>
-    <!-- 新的序列编辑器组件 -->
+    <!-- 序列编辑器组件 -->
     <SequenceEditorDialog
       v-model="isSeqDialogVisible"
       :nodes="nodes"
       :initial-data="seqForm.id ? seqForm : null"
       @save="handleSequenceSave"
     />
+    <!-- 高级参数组件 -->
+    <NodeAdvancedSettings
+      v-model:visible="advancedSettingsVisible"
+      :config="form"
+      @update:item="
+        (payload) => {
+          form[payload.key] = payload.value
+        }
+      "
+    />
+    <!-- 对话框内嵌文件浏览器 -->
     <el-dialog
       v-model="fileBrowserContext.visible"
       class="file-browser-dialog"
@@ -480,6 +522,7 @@
 import FileBrowser from '../components/FileBrowser.vue'
 import NodeParamsList from '../components/NodeParamsList.vue'
 import SequenceEditorDialog from '../components/SequenceEditorDialog.vue'
+import NodeAdvancedSettings from '../components/NodeAdvancedSettings.vue'
 import { ref, reactive, computed, watch, onMounted } from 'vue'
 import { useRobotStore } from '../store/robot'
 import { useFoxglove } from '../composables/useFoxglove.js'
@@ -497,7 +540,9 @@ import {
   Folder,
   Headset,
   Operation,
-  SwitchButton
+  SwitchButton,
+  Setting,
+  Top
 } from '@element-plus/icons-vue'
 // #endregion
 
@@ -554,8 +599,12 @@ const form = reactive({
   id: '',
   name: '',
   cmd: 'roslaunch',
-  args: []
+  args: [],
+  highPriority: false
 })
+
+// 控制高级设置对话框显示
+const advancedSettingsVisible = ref(false)
 
 // 辅助：获取显示路径
 const getDisplayPath = (nodeArgs, nodeCmd = 'roslaunch') => {
@@ -602,6 +651,7 @@ function startAdding() {
   form.name = ''
   form.cmd = 'roslaunch'
   form.args = []
+  form.highPriority = false // 重置
 }
 
 function startEditing(node) {
@@ -610,6 +660,7 @@ function startEditing(node) {
   form.name = node.name
   form.cmd = node.cmd
   form.args = Array.isArray(node.args) ? [...node.args] : [node.args]
+  form.highPriority = typeof node.nice === 'number' && node.nice < 0
 }
 
 function cancelEditing() {
@@ -642,7 +693,8 @@ async function saveNode() {
     cmd: form.cmd,
     args: [...form.args],
     description: '',
-    params: currentParams
+    params: currentParams,
+    nice: form.highPriority ? -10 : 0
   }
 
   try {
@@ -650,7 +702,9 @@ async function saveNode() {
     form.id = ''
     form.name = ''
     form.args = []
+    form.highPriority = false
     cancelEditing()
+    advancedSettingsVisible.value = false
     // eslint-disable-next-line no-unused-vars
   } catch (e) {
     /* Error handled in store */
@@ -678,6 +732,10 @@ function toggleExpand(node) {
   } else {
     expandedNodeIds.value.add(node.id)
   }
+}
+
+function openAdvancedSettings() {
+  advancedSettingsVisible.value = true
 }
 
 // --- Sequence Operations ---
@@ -1309,6 +1367,16 @@ watch(
   color: var(--text-primary);
 }
 
+/* 卡片头部的优先级指示图标 */
+.high-priority-icon {
+  font-size: 16px;
+  color: #e6a23c; /* Warning Color (Orange) */
+  margin-left: 6px;
+  margin-top: 2px; /* 光学居中微调 */
+  filter: drop-shadow(0 2px 4px rgba(230, 162, 60, 0.3)); /* 增加一点发光感 */
+  animation: fade-in 0.3s ease-in;
+}
+
 /* 状态标签 (Tags) */
 .node-list-panel .el-card :deep(.card-header .el-tag) {
   border-radius: 0px;
@@ -1402,18 +1470,61 @@ watch(
 }
 .launch-edit-row {
   display: flex;
-  gap: 5px;
+  align-items: center;
+  gap: 0;
   width: 100%;
+  padding: 0;
 }
 .launch-content-edit-btn {
-  flex-shrink: 0;
-  width: 32px;
-  padding: 0;
+  font-size: 16px;
+  width: 24px;
+  height: 24px;
+  margin-right: 0;
+  border: none !important;
+  background: transparent !important;
+  color: var(--text-secondary) !important;
+}
+
+.launch-content-edit-btn:hover {
+  background-color: rgba(144, 147, 153, 0.15) !important; /* 浅灰底 */
+  color: var(--text-primary) !important;
+}
+
+/* 2. 编辑栏的齿轮设置按钮 */
+.setting-btn {
+  width: 24px;
+  height: 24px;
+  border: none !important; /* 移除边框 */
+  background: transparent !important; /* 透明背景 */
+  color: var(--text-secondary) !important;
+  transition: all 0.3s ease;
+  margin-right: 4px; /* 与保存按钮的间距 */
+  font-size: 16px; /* 图标稍微大一点 */
+}
+
+/* 齿轮按钮的 Hover 效果 */
+.setting-btn:hover {
+  background-color: rgba(144, 147, 153, 0.15) !important; /* 浅灰底 */
+  color: var(--text-primary) !important;
+  transform: rotate(90deg); /* 增加一个有趣的旋转动效 */
+}
+
+/* 简单的淡入动画 */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 /* --- 卡片底部操作区 (Card Footer) --- */
 .node-list-panel .el-card :deep(.el-card__footer) {
   width: auto;
+  padding-left: 8px;
   padding-right: 15px;
   height: auto;
   display: flex;

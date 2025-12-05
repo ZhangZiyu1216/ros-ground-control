@@ -18,6 +18,7 @@ type StartProcReq struct {
 	ID   string   `json:"id"`
 	Cmd  string   `json:"cmd"`
 	Args []string `json:"args"`
+	Nice int      `json:"nice"`
 }
 
 func RegisterProcRoutes(rg *gin.RouterGroup) {
@@ -159,6 +160,7 @@ func RegisterProcRoutes(rg *gin.RouterGroup) {
 			Env:         finalEnv,
 			SetupScript: setupScript,
 			RawArgs:     isRaw,
+			Nice:        req.Nice,
 		}
 
 		if err := service.GlobalProcManager.StartProcess(procConfig); err != nil {
