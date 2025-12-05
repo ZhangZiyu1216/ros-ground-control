@@ -90,11 +90,27 @@
             <!-- Case: rostopic -->
             <div v-else-if="cmdType === 'rostopic'" key="rostopic" class="form-group">
               <el-form-item label="话题名称">
-                <el-input v-model="params.topic" placeholder="/cmd_vel" class="modern-input">
-                  <template #prefix
-                    ><el-icon class="input-icon"><ChatDotRound /></el-icon
-                  ></template>
-                </el-input>
+                <el-autocomplete
+                  v-model="params.topic"
+                  :fetch-suggestions="querySearchTopics"
+                  placeholder="/cmd_vel"
+                  class="modern-input"
+                  trigger-on-focus
+                  clearable
+                  @select="handleTopicSelect"
+                  @blur="handleTopicChange"
+                >
+                  <template #prefix>
+                    <el-icon class="input-icon"><ChatDotRound /></el-icon>
+                  </template>
+                  <!-- 自定义下拉选项模板 -->
+                  <template #default="{ item }">
+                    <div class="topic-suggestion-item">
+                      <span class="topic-name">{{ item.value }}</span>
+                      <span class="topic-type">{{ item.type }}</span>
+                    </div>
+                  </template>
+                </el-autocomplete>
               </el-form-item>
               <el-form-item label="消息类型">
                 <el-input
@@ -218,11 +234,15 @@ import {
   MagicStick,
   SetUp
 } from '@element-plus/icons-vue'
+import { useFoxglove } from '../composables/useFoxglove'
 
 const props = defineProps({
-  modelValue: Boolean
+  modelValue: Boolean,
+  currentBackendId: { type: String, default: '' }
 })
 const emit = defineEmits(['update:modelValue', 'confirm'])
+const { getTopicTypeAndTemplate, getTopicsRef } = useFoxglove()
+const topicsList = getTopicsRef(props.currentBackendId)
 
 const visible = computed({
   get: () => props.modelValue,
@@ -244,20 +264,72 @@ const params = reactive({
   raw: ''
 })
 
+// 自动填充逻辑
+// 当话题输入框失去焦点或被选中时触发
+const handleTopicChange = () => {
+  if (cmdType.value !== 'rostopic' || !params.topic || !props.currentBackendId) return
+  const info = getTopicTypeAndTemplate(props.currentBackendId, params.topic)
+  if (info.type) params.type = info.type
+  // 如果内容为空，填入 YAML 模板
+  if (info.template && !params.yaml) {
+    params.yaml = info.template
+  }
+}
+
+// 话题搜索逻辑
+const querySearchTopics = (queryString, cb) => {
+  const list = topicsList.value || []
+  const results = queryString
+    ? list.filter((t) => t.topic.toLowerCase().includes(queryString.toLowerCase()))
+    : list
+
+  // 转换为 autocomplete 需要的格式
+  // value 是显示在输入框里的值
+  cb(
+    results.map((t) => ({
+      value: t.topic,
+      type: t.schemaName
+    }))
+  )
+}
+
+// 选中话题后的回调
+const handleTopicSelect = (item) => {
+  params.topic = item.value
+  // 立即触发自动填充逻辑
+  handleTopicChange()
+}
+
 // 1. 生成参数字符串 (不包含命令本身)
 const argsPart = computed(() => {
   switch (cmdType.value) {
     case 'rosrun':
       if (!params.pkg || !params.exe) return null
       return `${params.pkg} ${params.exe} ${params.args}`.trim()
+
     case 'rostopic': {
       if (!params.topic || !params.type) return null
+      let rawYaml = params.yaml || ''
+      // 1. 如果 YAML 为空，默认为空对象 (通常 ROS 需要至少一个空字典 {})
+      if (!rawYaml.trim()) {
+        rawYaml = '{}'
+      }
+      // 2. 转义处理：
+      const safeYaml = rawYaml
+        .replace(/\\/g, '\\\\') // 先转义反斜杠自身
+        .replace(/"/g, '\\"') // 转义双引号
+        .replace(/\$/g, '\\$') // 转义美元符
+        .replace(/`/g, '\\`') // 转义反引号
       const modeFlag = params.loop ? `-r ${params.rate}` : '-1'
-      return `pub ${modeFlag} ${params.topic} ${params.type} '${params.yaml}'`
+      // 3. 使用双引号包裹，保留内部换行
+      return `pub ${modeFlag} ${params.topic} ${params.type} "${safeYaml}"`
     }
-    case 'rosservice':
+
+    case 'rosservice': {
       if (!params.service) return null
-      return `call ${params.service} '${params.serviceArgs}'`
+      const safeArgs = params.serviceArgs.replace(/'/g, "'\\''")
+      return `call ${params.service} "${safeArgs}"`
+    }
     case 'bash':
       if (!params.raw) return null
       return params.raw
@@ -499,6 +571,33 @@ const confirm = () => {
   line-height: 24px;
   font-size: 12px;
 }
+.modern-textarea :deep(.el-textarea__inner) {
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 12px;
+  white-space: pre; /* 保留空白和换行 */
+  overflow-x: auto; /* 允许横向滚动 */
+}
+
+.topic-suggestion-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  padding: 4px 0;
+}
+
+.topic-name {
+  font-weight: 500;
+  color: var(--c-text-main);
+  font-size: 13px;
+}
+
+.topic-type {
+  font-size: 11px;
+  color: var(--c-text-sub);
+  font-family: monospace; /* 消息类型用等宽字体更好看 */
+  margin-left: 10px;
+}
 
 /* ============================================
    4. 终端预览 (Terminal)
@@ -509,7 +608,7 @@ const confirm = () => {
   /* [核心] 强制应用背景色变量，若变量失效则回退到黑色 */
   background-color: var(--c-term-bg, #1e1e1e);
   border-radius: 8px;
-  overflow: hidden;
+  overflow: auto;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
   border: 1px solid var(--c-card-border);
   height: 80px;
@@ -624,5 +723,18 @@ const confirm = () => {
 .fade-slide-leave-to {
   opacity: 0;
   transform: translateX(-5px);
+}
+</style>
+
+<style>
+html.dark .el-autocomplete-suggestion__wrap {
+  background-color: #2b2b2d; /* 与 --c-card-bg 一致 */
+  border: 1px solid #414243;
+}
+html.dark .el-autocomplete-suggestion__list li {
+  color: #e5eaf3;
+}
+html.dark .el-autocomplete-suggestion__list li:hover {
+  background-color: rgba(64, 158, 255, 0.1);
 }
 </style>

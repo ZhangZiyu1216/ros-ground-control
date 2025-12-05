@@ -231,7 +231,7 @@ watch(
 const querySearch = (queryString, cb) => {
   const results = sshDevices.value.map((d) => ({
     value: d.ip,
-    hostname: d.hostname
+    hostname: d.hostname || d.ip
   }))
   const filtered = queryString
     ? results.filter(

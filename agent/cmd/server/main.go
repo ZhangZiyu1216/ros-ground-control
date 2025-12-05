@@ -119,7 +119,7 @@ func acquireInstanceLock() (func(), error) {
 
 	// 3. 写入 PID
 	file.Truncate(0)
-	file.WriteString(fmt.Sprintf("%d", os.Getpid()))
+	fmt.Fprintf(file, "%d", os.Getpid())
 
 	unlock := func() {
 		syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
@@ -204,6 +204,8 @@ func main() {
 	service.GlobalMonitor.StartMonitor()
 	// 启动网络监控
 	service.GlobalROSManager.StartNetworkMonitor()
+	// 启动 Roscore 巡检
+	service.GlobalROSManager.StartCoreMonitor()
 	// 现在不自动启动 ROS 基础设施
 	//service.GlobalROSManager.StartDefaultServices()
 	log.Println("[Agent] ROS Stack is in standby mode. Waiting for client request.")

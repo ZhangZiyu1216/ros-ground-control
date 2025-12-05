@@ -123,12 +123,22 @@ class SshDiscovery {
   async checkSSHAndResolve(ip) {
     const existing = this.devices.get(ip)
     if (existing && !existing.type.includes('probe')) return
-
-    const isOpen = await this.isPortOpen(ip, 22, 400)
-
-    if (isOpen && this.isScanning) {
-      let hostname = ip
+    // 调用新的探测方法
+    const result = await this.probeSshPort(ip, 22, 1000)
+    if (result.isOpen && this.isScanning) {
+      let hostname = ip // 默认显示 IP
       let type = 'ssh-probe (ip)'
+      let extraInfo = ''
+      // 1. 尝试使用 Banner 增强显示
+      if (result.banner) {
+        // Banner 示例: "SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.1"
+        // 提取 OS 信息
+        if (result.banner.toLowerCase().includes('ubuntu')) extraInfo = 'Ubuntu'
+        else if (result.banner.toLowerCase().includes('debian')) extraInfo = 'Debian'
+        else if (result.banner.toLowerCase().includes('raspbian')) extraInfo = 'Raspbian'
+        else extraInfo = 'SSH Device'
+      }
+      // 2. 尝试 DNS 反查 (保持原有逻辑，作为补充)
       try {
         const hostnames = await dns.promises.reverse(ip)
         if (hostnames && hostnames.length > 0) {
@@ -137,25 +147,73 @@ class SshDiscovery {
         }
         // eslint-disable-next-line no-unused-vars
       } catch (e) {
-        // no use
+        // ignore
       }
-
-      this.addDevice({ hostname, ip, name: hostname, mac: 'N/A', type })
+      // 3. 构造最终显示名称
+      // 如果没有解析出 Hostname，但有 OS 信息，则显示 "IP (OS)"
+      // 如果解析出了 Hostname，则显示 "Hostname (IP)"
+      let displayName = hostname
+      if (hostname === ip && extraInfo) {
+        displayName = `${ip} (${extraInfo})` // 例如: 192.168.1.10 (Ubuntu)
+      } else if (hostname !== ip) {
+        // hostname 已经很有意义了
+      }
+      // 注意：这里我们将 displayName 存入 hostname 字段，或者存入一个新的 display字段供前端使用
+      // 为了兼容前端 <el-autocomplete> 的显示，我们尽量让 hostname 字段有意义
+      this.addDevice({
+        hostname: displayName, // 前端显示用
+        ip,
+        name: hostname,
+        mac: 'N/A',
+        type,
+        rawBanner: result.banner // 保留原始 banner 备查
+      })
     }
   }
 
-  isPortOpen(ip, port, timeout = 400) {
+  probeSshPort(ip, port, timeout = 1000) {
     return new Promise((resolve) => {
       const socket = new net.Socket()
-      let status = false
+      let isOpen = false
+      let banner = ''
+      let isResolved = false
+
+      const cleanup = () => {
+        if (!socket.destroyed) socket.destroy()
+      }
+
+      const finish = () => {
+        if (isResolved) return
+        isResolved = true
+        cleanup()
+        resolve({ isOpen, banner })
+      }
+
       socket.setTimeout(timeout)
+
       socket.on('connect', () => {
-        status = true
-        socket.destroy()
+        isOpen = true
+        // 连接成功后，不要立即销毁，等待数据
       })
-      socket.on('timeout', () => socket.destroy())
-      socket.on('error', () => socket.destroy())
-      socket.on('close', () => resolve(status))
+
+      socket.on('data', (data) => {
+        // SSH 服务端连接后会立即发送版本字符串
+        const str = data.toString().trim()
+        if (str.startsWith('SSH-')) {
+          banner = str
+          finish() // 拿到 Banner，任务完成
+        }
+      })
+
+      socket.on('timeout', () => finish())
+      socket.on('error', () => finish())
+      socket.on('close', () => finish())
+
+      // 兜底：如果连接成功但 500ms 内没收到数据，也算成功但不带 Banner
+      setTimeout(() => {
+        if (isOpen && !isResolved) finish()
+      }, timeout + 200)
+
       socket.connect(port, ip)
     })
   }

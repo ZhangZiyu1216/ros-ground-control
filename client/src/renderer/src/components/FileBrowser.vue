@@ -282,7 +282,11 @@
           </el-button>
         </div>
       </div>
-      <RosCommandDialog v-model="isCmdDialogVisible" @confirm="handleRosCommandConfirm" />
+      <RosCommandDialog
+        v-model="isCmdDialogVisible"
+        :current-backend-id="backendId"
+        @confirm="handleRosCommandConfirm"
+      />
 
       <!-- 通用名称输入弹窗 (新建/重命名) -->
       <el-dialog v-model="nameDialogVisible" :title="nameDialogTitle" width="400px" append-to-body>
@@ -562,7 +566,8 @@ function getDisplayName(file) {
 async function loadSidebarData() {
   try {
     const res = await robotStore.fsGetSidebar(props.backendId)
-    sidebarItems.value = res
+    // 增加兜底，防止 res 为 null 导致 res.places 报错
+    sidebarItems.value = res || { places: [], bookmarks: [] }
     const trashItem = res.places.find((p) => p.icon === 'Delete')
     if (trashItem) trashPath.value = trashItem.path
   } catch (error) {
@@ -577,7 +582,8 @@ async function loadDirectory(dirPath, isHistoryNav = false) {
   selectedFile.value = null // 清除选中
 
   try {
-    const fileList = await robotStore.fsListDir(props.backendId, dirPath)
+    const rawResult = await robotStore.fsListDir(props.backendId, dirPath)
+    const fileList = rawResult || []
 
     // 排序: 文件夹在前，然后按名称
     files.value = fileList

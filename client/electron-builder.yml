@@ -1,10 +1,15 @@
 appId: com.zzy.rosgroundcontrol
-productName: ROS Ground Control
+productName: ROS-Ground-Control
 directories:
   output: dist
 files:
   - out/**/*
-  - resources/**/*
+extraResources:
+  - from: "resources/dist"
+    to: "dist"
+    filter:
+      - "**/*"
+
 asar: true
 
 # --- Windows 配置 ---
@@ -18,7 +23,7 @@ nsis:
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   createStartMenuShortcut: true
-  shortcutName: ROS Ground Control
+  shortcutName: RGC
   installerIcon: resources/icon.ico
   uninstallerIcon: resources/icon.ico
   installerHeaderIcon: resources/icon.ico
@@ -33,7 +38,13 @@ linux:
     - target: AppImage
       arch:
         - x64
-  icon: resources/icon.png
+  icon: resources/icons
   category: Development
-  executableName: ros-ground-control
+  executableName: ros-ground-control # 这是一个关键设置
   artifactName: ${productName}-${version}.${ext}
+
+  # [修改 3] 修复 Deb 包图标不显示的关键配置
+  desktop:
+    StartupWMClass: ros-ground-control # 必须与 executableName 一致
+    Name: ROS Ground Control
+    Comment: ROS Management Client

@@ -315,6 +315,39 @@ func (rm *ROSManager) RestartService(id string) error {
 	return GlobalProcManager.StartProcess(cfg)
 }
 
+// StartCoreMonitor 启动后台巡检，自动接管外部启动的 roscore
+func (rm *ROSManager) StartCoreMonitor() {
+	log.Println("[ROS] Roscore background monitor started.")
+
+	go func() {
+		// 每 3 秒检查一次
+		ticker := time.NewTicker(3 * time.Second)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			// 1. 如果 Agent 已经在管理 roscore 了，跳过
+			if GlobalProcManager.IsRunning(IDRosCore) {
+				continue
+			}
+
+			// 2. 如果 Agent 没管理，但端口通了 -> 说明有“野生”的 roscore 出现了
+			if rm.isPortOpen("localhost", "11311") {
+				// 查找 PID
+				pid, err := findPidByName("rosmaster")
+				if err == nil && pid > 0 {
+					log.Printf("[ROS-Monitor] Detected external roscore (PID: %d). Adopting...", pid)
+
+					// 3. 自动接管
+					// 这会立即触发 WebSocket 广播，前端 UI 的状态灯会变绿
+					GlobalProcManager.AdoptExternalProcess(IDRosCore, "roscore (auto-detected)", pid)
+					GlobalCompressor.Reset()
+					GlobalCompressor.Start()
+				}
+			}
+		}
+	}()
+}
+
 // --- 端口检测工具保持不变 ---
 func (rm *ROSManager) isPortOpen(host, port string) bool {
 	timeout := time.Second

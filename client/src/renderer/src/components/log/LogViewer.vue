@@ -14,6 +14,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { WarningFilled } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { Terminal } from 'xterm'
 import { FitAddon } from 'xterm-addon-fit'
 import { WebLinksAddon } from 'xterm-addon-web-links'
@@ -36,6 +37,7 @@ let socket = null
 let resizeObserver = null
 let themeObserver = null // [新增] 用于监听主题变化
 let lastLogIndex = 0
+let isPasting = false
 
 // [新增] Xterm 主题配置
 const themes = {
@@ -102,6 +104,53 @@ const getTheme = () => {
   return document.documentElement.classList.contains('dark') ? themes.dark : themes.light
 }
 
+// 2. 定义智能粘贴函数
+const handleSmartPaste = async (text) => {
+  // 1. [防抖检查] 如果正在粘贴中，或者文本为空，直接忽略
+  if (isPasting || !text) return
+  // 2. [加锁]
+  isPasting = true
+  try {
+    if (!text || !socket || socket.readyState !== WebSocket.OPEN) return
+    // 检查是否包含多行 (中间有换行符)
+    // trim() 去掉首尾空白后，如果中间还有 \n，说明是多行
+    const isMultiLine = text.trim().includes('\n')
+    if (isMultiLine) {
+      try {
+        await ElMessageBox.confirm(
+          `即将粘贴多行文本，这可能会立即执行其中的命令。\n\n预览:\n${text.substring(0, 100)}${text.length > 100 ? '...' : ''}`,
+          '多行粘贴确认',
+          {
+            confirmButtonText: '粘贴并执行',
+            cancelButtonText: '取消',
+            type: 'warning',
+            customStyle: { whiteSpace: 'pre-wrap' } // 保持换行显示
+          }
+        )
+        // 用户确认后，原样发送（通常多行脚本用户希望它执行）
+        socket.send(JSON.stringify({ type: 'input', data: text }))
+        // 聚焦回终端
+        terminal.focus()
+      } catch {
+        // 用户取消
+        terminal.focus()
+      }
+    } else {
+      // 单行情况：去掉末尾的换行符，实现“等待用户回车”
+      const cleanText = text.replace(/[\r\n]+$/, '')
+      socket.send(JSON.stringify({ type: 'input', data: cleanText }))
+    }
+  } catch (err) {
+    console.error('Paste error:', err)
+  } finally {
+    // 3. [解锁] 延迟 300ms 释放锁
+    // 这个延迟足以覆盖键盘抖动或事件冒泡造成的时间差
+    setTimeout(() => {
+      isPasting = false
+    }, 300)
+  }
+}
+
 // --- Xterm 初始化 ---
 const initXterm = () => {
   terminal = new Terminal({
@@ -111,18 +160,34 @@ const initXterm = () => {
     fontSize: 13,
     fontFamily: 'Consolas, "Courier New", monospace',
     theme: getTheme(),
-    allowProposedApi: true
+    allowProposedApi: true,
+    rightClickSelectsWord: true
   })
 
   fitAddon = new FitAddon()
   terminal.loadAddon(fitAddon)
   terminal.loadAddon(new WebLinksAddon())
 
+  // 1. 挂载到 DOM
   terminal.open(terminalContainer.value)
 
-  // [修改] 优化 Resize 逻辑，确保填满容器
+  terminalContainer.value.addEventListener(
+    'paste',
+    (e) => {
+      // 阻止 xterm 的默认粘贴行为 (即阻止它直接发给后端)
+      e.preventDefault()
+      e.stopPropagation()
+      // 直接从事件中获取文本 (同步，无需权限提示，体验更好)
+      const text = (e.clipboardData || window.clipboardData).getData('text')
+      if (text) {
+        handleSmartPaste(text)
+      }
+    },
+    true
+  )
+
+  // 2. 布局监听
   resizeObserver = new ResizeObserver(() => {
-    // 使用 requestAnimationFrame 避免频繁触发
     window.requestAnimationFrame(() => {
       if (!fitAddon) return
       try {
@@ -132,13 +197,13 @@ const initXterm = () => {
         }
         // eslint-disable-next-line no-unused-vars
       } catch (e) {
-        // 忽略 fit 报错 (例如元素不可见时)
+        /* ignore */
       }
     })
   })
   resizeObserver.observe(terminalContainer.value)
 
-  // [新增] 监听 HTML class 变化以切换深色模式
+  // 3. 主题监听
   themeObserver = new MutationObserver((mutations) => {
     mutations.forEach((mutation) => {
       if (mutation.attributeName === 'class') {
@@ -147,6 +212,44 @@ const initXterm = () => {
     })
   })
   themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] })
+
+  // 4. 键盘事件拦截 (Ctrl+C / Ctrl+V)
+  terminal.attachCustomKeyEventHandler((arg) => {
+    if (arg.type !== 'keydown') return true
+
+    const isCtrlC = (arg.ctrlKey || arg.metaKey) && arg.code === 'KeyC'
+    const isCtrlV = (arg.ctrlKey || arg.metaKey) && arg.code === 'KeyV'
+
+    if (isCtrlC) {
+      const selection = terminal.getSelection()
+      if (selection) {
+        navigator.clipboard.writeText(selection).then(() => {
+          ElMessage.success({ message: '已复制到剪贴板', duration: 1000, grouping: true })
+        })
+        return false
+      }
+    }
+
+    if (isCtrlV && !props.disabled) {
+      navigator.clipboard.readText().then(handleSmartPaste)
+      return false
+    }
+
+    return true
+  })
+
+  // 5. 右键菜单事件
+  terminalContainer.value.addEventListener('contextmenu', (e) => {
+    const selection = terminal.getSelection()
+    if (selection) {
+      e.preventDefault()
+      navigator.clipboard.writeText(selection)
+      ElMessage.success({ message: '已复制', duration: 800 })
+    } else if (!props.disabled && props.mode === 'terminal') {
+      e.preventDefault()
+      navigator.clipboard.readText().then(handleSmartPaste)
+    }
+  })
 }
 
 // [新增] 监听 disabled 状态，动态控制交互

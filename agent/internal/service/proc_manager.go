@@ -24,6 +24,7 @@ type ProcessConfig struct {
 	Args        []string
 	Env         []string // 额外的环境变量
 	SetupScript string   // 启动脚本路径
+	RawArgs     bool     // 新增：是否使用原始参数模式 (不加引号，不转义)
 }
 
 // ExitCallback 回调函数
@@ -53,6 +54,12 @@ type ProcessManager struct {
 }
 
 var GlobalProcManager = &ProcessManager{}
+
+// IsRunning 检查指定 ID 的进程是否正在受管运行
+func (pm *ProcessManager) IsRunning(id string) bool {
+	_, ok := pm.procs.Load(id)
+	return ok
+}
 
 func (pm *ProcessManager) SetExitCallback(cb ExitCallback) {
 	pm.onExit = cb
@@ -155,9 +162,17 @@ func (pm *ProcessManager) run(proc *MonitoredProcess) error {
 	cmdBuilder.WriteString(proc.config.CmdStr)
 
 	// 遍历参数，使用 %q 进行安全引用
-	// 这一步解决了 foxglove 参数中正则包含特殊字符的问题
 	for _, arg := range proc.config.Args {
-		cmdBuilder.WriteString(fmt.Sprintf(" %q", arg))
+		if proc.config.RawArgs {
+			// --- 核心修复：Raw 模式 ---
+			// 直接拼接字符串，只加前置空格
+			// 这种模式下，前端传来的字符串里有什么引号、空格，都会原样保留给 bash
+			cmdBuilder.WriteString(" " + arg)
+		} else {
+			// --- 原有模式：Safe Quote ---
+			// 适用于 roslaunch 的文件路径，防止路径空格导致解析错误
+			cmdBuilder.WriteString(fmt.Sprintf(" %q", arg))
+		}
 	}
 
 	fullCmdStr := cmdBuilder.String()

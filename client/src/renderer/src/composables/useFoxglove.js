@@ -6,7 +6,6 @@ import { MessageReader } from '@foxglove/rosmsg-serialization'
 
 // 数据仓库：按后端 ID 隔离
 const dataStores = new Map()
-
 const getDataStore = (backendId) => {
   if (!dataStores.has(backendId)) {
     dataStores.set(backendId, {
@@ -29,8 +28,84 @@ const getDataStore = (backendId) => {
   }
   return dataStores.get(backendId)
 }
-
 const activeConnections = new Map()
+
+// 辅助函数：根据类型定义生成默认值对象
+function generateDefaultValue(type, definitions) {
+  // 1. 基础类型处理
+  if (['bool'].includes(type)) return false
+  if (
+    [
+      'int8',
+      'uint8',
+      'int16',
+      'uint16',
+      'int32',
+      'uint32',
+      'int64',
+      'uint64',
+      'float32',
+      'float64'
+    ].includes(type)
+  )
+    return 0
+  if (['string'].includes(type)) return ''
+  if (['time', 'duration'].includes(type)) return { secs: 0, nsecs: 0 }
+
+  // 2. 查找复杂类型定义
+  const def = definitions.find((d) => d.name === type)
+  if (!def) return {} // 未知类型返回空对象
+
+  const obj = {}
+  for (const field of def.definitions) {
+    if (field.isConstant) continue // 跳过常量
+
+    let value
+    if (field.isArray) {
+      // 数组类型：如果是定长数组，生成对应长度的默认值；变长数组返回空数组
+      if (field.arrayLength) {
+        value = Array(field.arrayLength).fill(generateDefaultValue(field.type, definitions))
+      } else {
+        value = []
+      }
+    } else {
+      value = generateDefaultValue(field.type, definitions)
+    }
+    obj[field.name] = value
+  }
+  return obj
+}
+
+// 辅助函数：简单的 ROS 风格 YAML 转换器
+// 规则：数组使用 [a, b]，对象使用换行缩进
+function objectToYaml(obj, indentLevel = 0) {
+  const indent = '  '.repeat(indentLevel)
+  let output = ''
+
+  for (const [key, value] of Object.entries(obj)) {
+    // 数组处理：保持为行内 [a, b, c] 风格，更加紧凑且不易出错
+    if (Array.isArray(value)) {
+      const arrStr = JSON.stringify(value)
+      output += `${indent}${key}: ${arrStr}\n`
+    }
+    // 对象处理：递归
+    else if (typeof value === 'object' && value !== null) {
+      output += `${indent}${key}:\n`
+      output += objectToYaml(value, indentLevel + 1)
+    }
+    // 基础类型处理
+    else {
+      let displayValue = value
+      // 只有空字符串需要显式引号 ''，否则不加引号 (YAML标准)
+      if (typeof value === 'string') {
+        if (value === '') displayValue = "''"
+        // 如果字符串包含特殊字符，也可以在这里处理，但通常 ROS 消息很简单
+      }
+      output += `${indent}${key}: ${displayValue}\n`
+    }
+  }
+  return output
+}
 
 export function useFoxglove() {
   const robotStore = useRobotStore()
@@ -296,5 +371,37 @@ export function useFoxglove() {
     }
   }
 
-  return { getTopicsRef, getMessage, subscribe }
+  // 获取话题的消息类型名称和默认消息模板
+  const getTopicTypeAndTemplate = (backendId, topicName) => {
+    ensureConnection(backendId)
+    const store = getDataStore(backendId)
+    const channel = store.nameToChannel.get(topicName)
+
+    if (!channel) {
+      return { type: '', template: '' }
+    }
+    try {
+      // 1. 解析 Schema
+      const definitions = parseRosMsg(channel.schema, { ros2: false })
+      // 2. 找到根定义 (通常是数组的第一个，或者与 schemaName 匹配的)
+      // 注意：Foxglove 解析出来的 definitions 可能包含依赖项
+      const rootDef = definitions.find((d) => d.name === channel.schemaName) || definitions[0]
+      if (!rootDef) return { type: channel.schemaName, template: '{}' }
+      // 3. 递归生成对象
+      const msgObj = generateDefaultValue(rootDef.name, definitions)
+      // 4. 转换为 YAML 风格的字符串 (为了不仅好读，且容易被 rostopic pub 接受，其实 JSON 格式最稳妥)
+      // 这里我们返回格式化好的 JSON，用户可以编辑，最后提交时我们再压缩
+      const templateStr = objectToYaml(msgObj).trimEnd()
+
+      return {
+        type: channel.schemaName,
+        template: templateStr // 返回带缩进的 JSON 字符串，方便用户编辑
+      }
+    } catch (e) {
+      console.error('[Foxglove] Generate template failed:', e)
+      return { type: channel.schemaName || '', template: '' }
+    }
+  }
+
+  return { getTopicsRef, getMessage, subscribe, getTopicTypeAndTemplate }
 }

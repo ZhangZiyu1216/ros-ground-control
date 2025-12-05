@@ -13,7 +13,6 @@ import icon_ico from '../../resources/icon.ico?asset'
 let win
 const store = new Store.default()
 
-app.setName('ROS Ground Control')
 app.setAppUserModelId('com.zzy.rosgroundcontrol')
 
 function createWindow() {

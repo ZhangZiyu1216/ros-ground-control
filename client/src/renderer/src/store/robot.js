@@ -86,7 +86,7 @@ export const useRobotStore = defineStore('robot', () => {
     ip: settings.ip,
     port: settings.port || 8080,
     hostname: settings.hostname,
-    name: settings.name || settings.hostname,
+    name: settings.name || settings.hostname || settings.ip,
     status: 'setting_up',
 
     token: null,
@@ -141,18 +141,35 @@ export const useRobotStore = defineStore('robot', () => {
   // Region 2: Connection & Handshake (Core)
   // ==================================================================================
 
+  // 辅助：HTTP 存活探测
+  const probeAgentAlive = async (ip, port) => {
+    try {
+      // 尝试请求一个最轻量的接口，设置极短的超时 (1.5秒)
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 1500)
+      // 注意：这里使用 fetch 仅仅是为了探测 TCP/HTTP 是否通畅
+      const res = await fetch(`http://${ip}:${port}/api/sys/info`, {
+        method: 'GET',
+        signal: controller.signal
+      })
+      clearTimeout(timeoutId)
+      // 只要有响应（哪怕是 401/500），都说明 TCP 是通的，Agent 是活的
+      return true
+    } catch (e) {
+      return false
+    }
+  }
+
   // 握手逻辑 (WebSocket Auth)
   const handshakeAndConnect = (ip, port) => {
     return new Promise((resolve, reject) => {
       const targetPort = port || 8080
       const wsUrl = `ws://${ip}:${port}/ws/logs`
       console.log(`[Connect] Initiating handshake: ${wsUrl}`)
-
       const ws = new WebSocket(wsUrl)
       // 状态标志位：防止 timeout 和 onmessage/onclose 竞态
       let isFinished = false
       let handshakeTimeout = null
-
       // 清理函数
       const cleanup = () => {
         if (handshakeTimeout) clearTimeout(handshakeTimeout)
@@ -199,15 +216,30 @@ export const useRobotStore = defineStore('robot', () => {
       }
 
       ws.onerror = () => {}
-      ws.onclose = (e) => {
-        if (isFinished) return // 如果是因为超时我们主动 close 的，忽略
+      ws.onclose = async (e) => {
+        if (isFinished) return // 超时或已成功则忽略
         cleanup()
         console.warn(`[Connect] WS Closed: code=${e.code}, reason=${e.reason}`)
-        if (e.code === 4009 || e.reason === 'Conflict' || e.code === 1006) {
-          reject(new Error('连接被拒绝: 设备繁忙(Conflict)或服务未启动'))
-        } else {
-          reject(new Error(`连接断开 (Code: ${e.code})`))
+        // 1. 如果后端明确返回了 4009 或 Conflict (部分 WebSocket 实现支持)
+        if (e.code === 4009 || e.reason === 'Conflict') {
+          return reject(new Error('Conflict: 设备正被其他客户端占用'))
         }
+        // 2. 处理通用的 1006 异常关闭
+        if (e.code === 1006) {
+          console.log('[Connect] WS failed with 1006. Probing HTTP availability...')
+          // 发起 HTTP 探测
+          const isAlive = await probeAgentAlive(ip, targetPort)
+          if (isAlive) {
+            // HTTP 通，WS 不通 -> 肯定是后端拒绝了 WS 握手 (通常是因为被占用)
+            return reject(new Error('Conflict: 设备在线但拒绝连接 (可能已被占用)'))
+          } else {
+            // HTTP 也不通 -> 真的挂了
+            return reject(new Error('Connection Refused: 设备离线或端口错误'))
+          }
+        }
+
+        // 3. 其他未知错误
+        reject(new Error(`连接断开 (Code: ${e.code})`))
       }
     })
   }
@@ -216,7 +248,6 @@ export const useRobotStore = defineStore('robot', () => {
     try {
       // 第一次解析：解包信封 { stream, data, ... }
       const msg = JSON.parse(event.data)
-
       // 分流处理
       if (msg.stream === 'system-stats') {
         // [关键步骤] 二次解析：后端说 data 是字符串，必须再次 JSON.parse
@@ -271,33 +302,17 @@ export const useRobotStore = defineStore('robot', () => {
       try {
         finalRes = await handshakeAndConnect(targetIp, initialPort)
       } catch (e) {
-        console.warn(
-          `[Connect] Direct connect failed (${targetIp}:${initialPort}), scanning for new address...`
-        )
-        // 2. 尝试 mDNS 找回
-        if (settings.hostname) {
-          console.log(`[Connect] Retry with mDNS: ${settings.hostname}`)
-
-          // [CHANGE] 传入 initialPort 作为“需避让的旧端口”
+        console.warn(`[Connect] Direct connect failed (${targetIp}:${initialPort})`)
+        // [FIX 1] 无论有没有 hostname 都尝试扫描 (基于 IP 匹配)
+        if (settings.hostname || settings.ip) {
+          console.log(`[Connect] Retry with mDNS. Host: ${settings.hostname}, IP: ${settings.ip}`)
           const discovery = await findDeviceAddress(settings.hostname, settings.ip, initialPort)
-
           if (discovery) {
-            const isIpChanged = discovery.ip !== targetIp
-            const isPortChanged = discovery.port !== initialPort
-
-            if (isIpChanged || isPortChanged) {
-              console.log(`[Connect] Auto-corrected address to: ${discovery.ip}:${discovery.port}`)
-
-              // 使用新地址重试握手
-              finalRes = await handshakeAndConnect(discovery.ip, discovery.port)
-
-              finalIp = discovery.ip
-              finalPort = discovery.port
-              client.ipChanged = true
-            } else {
-              // 发现的地址和旧地址一模一样，说明 mDNS 还没更新，或者真的连不上
-              throw e
-            }
+            console.log(`[Connect] Auto-corrected to: ${discovery.ip}:${discovery.port}`)
+            finalRes = await handshakeAndConnect(discovery.ip, discovery.port)
+            finalIp = discovery.ip
+            finalPort = discovery.port
+            client.ipChanged = true
           } else {
             throw e
           }
@@ -307,13 +322,21 @@ export const useRobotStore = defineStore('robot', () => {
       }
 
       if (!finalRes) throw new Error('握手失败')
-
       // 3. 验证并获取 ID
       const sysInfo = await finalRes.api.get('/sys/info')
       const procList = await finalRes.api.get('/proc/list')
       const realId = sysInfo.id
-
-      // 4. 更新数据
+      // 如果连接成功且服务器返回了 hostname，强制更新本地记录
+      if (sysInfo.hostname && sysInfo.hostname !== 'Unknown') {
+        if (clients[currentKey]) {
+          clients[currentKey].hostname = sysInfo.hostname
+          // 如果名字还是 IP，顺便把名字也更新了
+          if (clients[currentKey].name === clients[currentKey].ip) {
+            clients[currentKey].name = sysInfo.hostname
+          }
+        }
+      }
+      // 4. 更新当前对象数据
       client.api = finalRes.api
       client.token = finalRes.token
       client.logWs = finalRes.ws
@@ -323,7 +346,7 @@ export const useRobotStore = defineStore('robot', () => {
       client.sysInfo = sysInfo
       client.status = 'ready'
 
-      // 绑定消息处理
+      // 绑定消息处理 (此时绑定的是 currentKey 对应的对象)
       client.logWs.onmessage = (event) => handleWsMessage(client, event)
       client.logWs.onclose = () => {
         client.status = 'disconnected'
@@ -333,28 +356,33 @@ export const useRobotStore = defineStore('robot', () => {
       let activeKey = currentKey
       if (realId && currentKey !== realId) {
         if (clients[realId]) {
-          // 合并
+          // A. 合并到已存在的 UUID 客户端
           Object.assign(clients[realId], {
             api: client.api,
             token: client.token,
             logWs: client.logWs,
-            ip: client.ip,
+            ip: finalIp,
             port: finalPort,
             status: 'ready',
             sysInfo: sysInfo,
-            ipChanged: client.ipChanged
+            ipChanged: client.ipChanged,
+            hostname: sysInfo.hostname || client.hostname // 确保合并时也更新 hostname
           })
+          // 因为 client.logWs 之前的 onmessage 绑定的是 `client` (旧对象)，
+          // 这里必须重新绑定到 `clients[realId]` (新对象)，否则 UI 无法收到 Stats 更新！
+          clients[realId].logWs.onmessage = (event) => handleWsMessage(clients[realId], event)
           clients[realId].logWs.onclose = () => {
             clients[realId].status = 'disconnected'
           }
-          clients[realId].logWs.onmessage = (event) => handleWsMessage(clients[realId], event)
+
           delete clients[currentKey]
           activeKey = realId
         } else {
-          // 改名
+          // B. 改名 (直接移动对象)
           clients[realId] = client
           delete clients[currentKey]
           activeKey = realId
+          // 这里不需要重新绑定 onmessage，因为对象引用没变
         }
       }
 
@@ -372,11 +400,31 @@ export const useRobotStore = defineStore('robot', () => {
     } catch (e) {
       console.error('[Connect] Fatal:', e)
       client.status = 'failed'
-      broadcastClientState(client) // 失败状态也广播
-      if (e.message.includes('繁忙') || e.message.includes('Conflict')) {
-        ElNotification({ title: '连接被拒绝', message: '设备无响应或已被占用', type: 'warning' })
+      broadcastClientState(client)
+      // 错误分类提示
+      const msg = e.message
+      if (msg.includes('Conflict') || msg.includes('被占用')) {
+        // 黄色警告：告诉用户设备活着，但你要排队或踢人
+        ElNotification({
+          title: '连接被拒绝',
+          message: '设备当前正被其他客户端控制。',
+          type: 'warning',
+          duration: 5000
+        })
+      } else if (msg.includes('Refused') || msg.includes('离线')) {
+        // 红色错误：设备彻底连不上
+        ElNotification({
+          title: '连接失败',
+          message: '无法连接到设备，请检查网络或Agent是否启动。',
+          type: 'error'
+        })
       } else {
-        ElNotification({ title: '连接失败', message: e.message, type: 'error' })
+        // 其他错误
+        ElNotification({
+          title: '连接错误',
+          message: msg,
+          type: 'error'
+        })
       }
       throw e
     }
@@ -393,7 +441,7 @@ export const useRobotStore = defineStore('robot', () => {
     broadcastClientState(client)
   }
 
-  // [恢复功能] 手动设置状态
+  // 手动设置状态
   const setClientStatus = (id, status) => {
     if (clients[id]) {
       clients[id].status = status
@@ -405,7 +453,7 @@ export const useRobotStore = defineStore('robot', () => {
     }
   }
 
-  // [恢复功能] 手动刷新状态
+  // 手动刷新状态
   const refreshStatus = async (id) => {
     const client = clients[id]
     if (client && client.api && client.status === 'ready') {
@@ -522,7 +570,7 @@ export const useRobotStore = defineStore('robot', () => {
         : null
 
       console.log(
-        `[Discovery] Start scanning. Target: "${cleanTargetName}", IP: "${targetIp}", AvoidPort: ${avoidingPort}`
+        `[Discovery] Start scanning. TargetHost: "${cleanTargetName}", TargetIP: "${targetIp}", AvoidPort: ${avoidingPort}`
       )
 
       let bestCandidate = null
@@ -537,65 +585,57 @@ export const useRobotStore = defineStore('robot', () => {
       }
 
       const onFound = (service) => {
-        // service 结构: { name, port, addresses: ['192.168.x.x', ...], txt: { hostname: ... } }
-
+        // service 结构: { name, port, addresses: ['192.168.x.x', ...], txt: ... }
         // 2. 获取发现的服务信息
         const foundHostname = service.txt?.hostname || service.host || service.name || ''
         const cleanFoundName = foundHostname.toLowerCase().replace('.local', '')
-        // 后端发来的 IP (只取了第一个)，最好能在后端改为发送整个 addresses 数组，这里假设后端只发了 ip
-        // 如果你修改了后端传 addresses，可以用 service.addresses.includes(targetIp) 判断
-        const foundIp = service.ip || (service.addresses && service.addresses[0])
+        // 获取所有地址列表，防止后端只传了一个 ip 字段
+        // 注意：后端 ipc 传递时使用了 { ...service, ip: ... }，所以 addresses 数组应该还在
+        const allAddresses = service.addresses || []
+        const primaryIp = service.ip || allAddresses.find((a) => a.includes('.'))
         const foundPort = service.port
-
-        // --- 调试日志 (关键) ---
-        console.log(`[Discovery] Scanned: "${cleanFoundName}" (${foundIp}:${foundPort})`)
-
         // 3. 匹配逻辑
         let isMatch = false
-
-        // 规则 A: ID 匹配 (最强匹配，如果 settings 里存了 ID)
-        // (需要在 createClientObject 时保存 id，目前暂未实现完全，先跳过)
-
-        // 规则 B: 主机名匹配
+        // 规则 A: 主机名匹配 (最强匹配)
         if (cleanTargetName && cleanFoundName === cleanTargetName) {
           isMatch = true
           console.log('   -> Match Reason: Hostname exact match')
         }
-
-        // 规则 C: IP 匹配
-        if (!isMatch && targetIp && foundIp === targetIp) {
-          isMatch = true
-          console.log('   -> Match Reason: IP match')
+        // 规则 B: IP 匹配 (支持多 IP 列表)
+        if (!isMatch && targetIp) {
+          const ipHit = allAddresses.includes(targetIp) || primaryIp === targetIp
+          if (ipHit) {
+            isMatch = true
+            console.log('   -> Match Reason: IP exists in address list')
+          }
         }
-
-        // 规则 D [新增]: Localhost 特判
-        // 如果用户填的是 localhost，而 mDNS 发现了任意服务，通常这就是本机的服务。
-        // 为了安全，我们假设只要发现了，且目标是 localhost，就认为是匹配的。
+        // 规则 C: Localhost 特判
         if (!isMatch && (cleanTargetName === 'localhost' || targetIp === '127.0.0.1')) {
-          // 进阶：可以在这里判断 service.addresses 是否包含本机 IP，暂且直接通过
           isMatch = true
           console.log('   -> Match Reason: Localhost fuzzy match')
         }
-
         // 4. 处理匹配结果
-        if (isMatch && foundIp && foundPort) {
-          const candidate = { ip: foundIp, port: foundPort, id: service.txt?.id }
-
-          // [Fast Path] 发现新端口，立即返回
+        if (isMatch && foundPort) {
+          // 优先使用 targetIp (如果它在列表里)，否则使用后端推荐的 IP
+          const finalIp = (allAddresses.includes(targetIp) ? targetIp : primaryIp) || primaryIp
+          const candidate = { ip: finalIp, port: foundPort, id: service.txt?.id }
+          // [Fast Path] 发现新端口 -> 立即返回
           if (avoidingPort && foundPort !== avoidingPort) {
             console.log(`[Discovery] ✅ FOUND NEW PORT: ${foundPort} (Old: ${avoidingPort})`)
             finish(candidate)
             return
           }
-
-          // [Ghost Path] 端口没变，可能是缓存，暂存起来
+          // [Ghost Path] 端口没变 -> 暂存
           if (!bestCandidate) {
-            console.log(`[Discovery] Found match but port same (${foundPort}). Keep looking...`)
+            console.log(
+              `[Discovery] Found match but port same (${foundPort}). Waiting for update...`
+            )
             bestCandidate = candidate
           }
+        } else {
+          console.log(`   -> ❌ Match Failed. (TargetIP: ${targetIp} not in list)`)
         }
       }
-
       try {
         cleanup = window.api.onMdnsServiceFound(onFound)
         window.api.startMdnsScan()
@@ -604,11 +644,14 @@ export const useRobotStore = defineStore('robot', () => {
         resolve(null)
         return
       }
-
       timer = setTimeout(() => {
-        console.log(`[Discovery] Timeout. Returning best candidate:`, bestCandidate)
+        if (bestCandidate) {
+          console.log(`[Discovery] Timeout. Using best candidate (Port: ${bestCandidate.port})`)
+        } else {
+          console.log(`[Discovery] Timeout. No matching device found.`)
+        }
         finish(bestCandidate)
-      }, 2000)
+      }, 2000) // 2秒超时
     })
   }
 
@@ -626,24 +669,53 @@ export const useRobotStore = defineStore('robot', () => {
     )
     client.serviceStatus.roscore = hasCore ? 'active' : 'inactive'
     client.serviceStatus.bridge = hasBridge ? 'active' : 'inactive'
-
     // 2. 节点状态同步 (保持不变)
+    // 遍历所有后端正在运行的进程
+    processes.forEach((proc) => {
+      // 忽略系统进程
+      if (
+        proc.id.startsWith('sys-') ||
+        proc.id.startsWith('auto-comp-') ||
+        proc.id.startsWith('play-') ||
+        proc.id.startsWith('bag-')
+      )
+        return
+      // 1. 同步配置列表状态 (Dashboard左侧)
+      if (client.nodes) {
+        const node = client.nodes.find((n) => n.name === proc.id)
+        if (node) {
+          node.status = 'running'
+          node._startTime = null
+        }
+      }
+      // 2. 同步日志对象状态 (LogPanel右侧)
+      if (!client.nodeLogs) client.nodeLogs = {}
+      if (!client.nodeLogs[proc.id]) {
+        // 如果是新发现的运行中进程（如刷新页面后），补全日志对象
+        // [修改] 仅添加一行简单的 Sync 提示，不加粗，不抢眼
+        client.nodeLogs[proc.id] = {
+          status: 'running',
+          lines: [`\r\n\x1b[90m[SYNC] Attached to running process: ${proc.id}\x1b[0m\r\n`] // 灰色字
+        }
+      } else {
+        // [关键] 强制更新状态为 running。LogPanel 里的 :closable="!isNodeRunning" 依赖此字段
+        client.nodeLogs[proc.id].status = 'running'
+      }
+    })
+    // 处理已停止节点 (保持 dashboard 状态同步)
     if (client.nodes) {
       client.nodes.forEach((node) => {
         const proc = processes.find((p) => p.id === node.name)
         const now = Date.now()
-        if (proc) {
-          if (node.status === 'stopping' && node._stopTime && now - node._stopTime < 8000) {
-            /* wait */
-          } else {
-            node.status = 'running'
-            node._startTime = null
-          }
-        } else {
+        if (!proc) {
           if (node.status === 'starting' && node._startTime && now - node._startTime < 5000) {
             /* wait */
           } else {
             node.status = 'stopped'
+            // [关键] 如果进程没了，日志状态也要标记为 stopped，这样用户才能关闭 Tab
+            if (client.nodeLogs && client.nodeLogs[node.name]) {
+              client.nodeLogs[node.name].status = 'stopped'
+            }
           }
         }
       })
@@ -657,7 +729,7 @@ export const useRobotStore = defineStore('robot', () => {
         ElNotification({ title: '录制结束', message: 'Rosbag 录制已停止', type: 'info' })
       }
     }
-    // B. [新增] 自动认领：如果本地没记录，但远程有 bag 进程，认领它！
+    // B. 自动认领：如果本地没记录，但远程有 bag 进程，认领它！
     else {
       // 查找 cmd 包含 'rosbag record' 的进程
       const activeBag = processes.find(
@@ -677,7 +749,7 @@ export const useRobotStore = defineStore('robot', () => {
         ElNotification({ title: '回放结束', message: '回放进程已退出', type: 'info' })
       }
     }
-    // B. [新增] 自动认领回放
+    // B. 自动认领回放
     else {
       const activePlay = processes.find(
         (p) => p.id.startsWith('play-') || p.cmd.includes('rosbag play')
@@ -722,10 +794,8 @@ export const useRobotStore = defineStore('robot', () => {
     if (stream === 'system') {
       if (data.includes('Process started')) {
         logObj.status = 'running'
-        logObj.lines.push(`\r\n\x1b[1;32m[SYSTEM] Node Started: ${process_id}\x1b[0m\r\n`)
       } else if (data.includes('Process exited')) {
         logObj.status = 'stopped'
-        logObj.lines.push(`\r\n\x1b[1;31m[SYSTEM] Node Exited: ${process_id}\x1b[0m\r\n`)
       }
       return
     }
@@ -744,10 +814,12 @@ export const useRobotStore = defineStore('robot', () => {
 
     if (!client.nodeLogs) client.nodeLogs = {}
 
+    // 初始化日志对象
     if (!client.nodeLogs[node.name]) client.nodeLogs[node.name] = { status: 'starting', lines: [] }
-    client.nodeLogs[node.name].lines.push(
-      `\r\n\x1b[1;33m[SYS] Launching ${node.name}...\x1b[0m\r\n`
-    )
+    const timeStr = new Date().toLocaleString()
+    const header = `\r\n\x1b[1;36m============================================================\r\n[LAUNCH] ${node.name} started at ${timeStr}\r\n============================================================\x1b[0m\r\n`
+
+    client.nodeLogs[node.name].lines.push(header)
 
     try {
       await ensureRosStackReady(client)
@@ -759,12 +831,11 @@ export const useRobotStore = defineStore('robot', () => {
     } catch (e) {
       if (target) target.status = 'error'
       if (client.nodeLogs && client.nodeLogs[node.name]) {
-        client.nodeLogs[node.name].lines.push(`\r\n\x1b[1;31m[SYS] Failed: ${e.message}\x1b[0m\r\n`)
+        client.nodeLogs[node.name].lines.push(`\r\n\x1b[1;31m[CMD] Failed: ${e.message}\x1b[0m\r\n`)
       }
       throw e
     }
   }
-
   const stopNodeProcess = async (clientId, nodeIdName) => {
     const client = clients[clientId]
     if (!client?.api) return
@@ -884,24 +955,73 @@ export const useRobotStore = defineStore('robot', () => {
     if (!client?.api) return
     try {
       const res = await client.api.get('/nodes')
-      client.nodes = (res || []).map((n) => ({ ...n, status: 'stopped' }))
+      const newConfigList = res || []
+      // 1. 建立当前状态的查找表 (Map<NodeId, NodeObject>)
+      const currentMap = new Map()
+      if (client.nodes && client.nodes.length > 0) {
+        client.nodes.forEach((node) => {
+          if (node.id) currentMap.set(node.id, node)
+        })
+      }
+      // 2. 合并配置与状态
+      client.nodes = newConfigList.map((newNode) => {
+        const existingNode = currentMap.get(newNode.id)
+        if (existingNode) {
+          // 如果节点已存在，保留其运行时状态
+          return {
+            ...newNode, // 使用后端的最新配置 (name, cmd, args)
+            status: existingNode.status, // 保留状态
+            _startTime: existingNode._startTime, // 保留启动时间戳
+            _stopTime: existingNode._stopTime // 保留停止时间戳
+            // 如果有 logs 对象引用也建议保留，不过 logs 单独存在 client.nodeLogs 里，这里存引用即可
+          }
+        } else {
+          // 如果是全新节点，状态设为 stopped
+          return { ...newNode, status: 'stopped' }
+        }
+      })
+      // 持久化到 Electron Store (用于下次冷启动)
       window.api.setConfig(getCacheKey(id), JSON.parse(JSON.stringify(client.nodes)))
     } catch (e) {
-      /* ignore */
+      console.error('[SyncNodes] Failed:', e)
     }
   }
 
   const saveNodeConfig = async (id, nodeData) => {
     const client = clients[id]
     if (!client) return
+    // 1. 本地乐观更新 (Optimistic Update)
     const idx = client.nodes.findIndex((n) => n.id === nodeData.id)
-    if (idx !== -1) client.nodes[idx] = { ...client.nodes[idx], ...nodeData }
-    else client.nodes.push({ ...nodeData, status: 'stopped' })
-
+    if (idx !== -1) {
+      // 编辑模式：合并新配置，但严格保留原有状态
+      const oldNode = client.nodes[idx]
+      client.nodes[idx] = {
+        ...oldNode, // 展开旧对象以保留 _startTime 等隐藏字段
+        ...nodeData, // 覆盖新配置
+        status: oldNode.status // 强制确保状态不被 nodeData 里的默认值覆盖
+      }
+    } else {
+      // 新增模式
+      client.nodes.push({ ...nodeData, status: 'stopped' })
+    }
+    // 2. 保存到本地缓存
     window.api.setConfig(getCacheKey(id), JSON.parse(JSON.stringify(client.nodes)))
+    // 3. 同步到后端
     if (client.status === 'ready') {
-      await client.api.post('/nodes', nodeData)
-      await syncNodes(id)
+      try {
+        // 注意：后端通常只接收配置数据，不接收 status 字段，最好清理一下
+        const payload = { ...nodeData }
+        delete payload.status
+        delete payload._startTime
+        delete payload._stopTime
+
+        await client.api.post('/nodes', payload)
+
+        // 4. 重新拉取确认 (此时 syncNodes 已经是修复版，不会重置状态)
+        await syncNodes(id)
+      } catch (e) {
+        ElMessage.error('保存节点配置失败: ' + e.message)
+      }
     }
   }
 

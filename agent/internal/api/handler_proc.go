@@ -42,6 +42,7 @@ func RegisterProcRoutes(rg *gin.RouterGroup) {
 		setupScript := ""
 		finalCmd := req.Cmd
 		finalArgs := []string{}
+		isRaw := false
 
 		switch req.Cmd {
 		case "roslaunch":
@@ -63,57 +64,80 @@ func RegisterProcRoutes(rg *gin.RouterGroup) {
 			}
 
 		case "rosrun", "rostopic", "rosservice":
-			// [Debug] 进入 ROS 命令逻辑
+			// --- 核心修复：开启 Raw 模式 ---
+			isRaw = true
+
 			if len(req.Args) >= 2 {
-				argsStr := req.Args[0]
+				// Index 0: 命令参数字符串
+				// Index 1: 上下文路径 (仅用于探测)
+
+				argsStr := req.Args[0] // 获取原始字符串
 				contextPath := req.Args[1]
 
+				// 探测环境 ... (保持不变)
+				detected := utils.DetectWorkspaceSetup(contextPath)
+				if detected != utils.DefaultRosSetup {
+					setupScript = detected
+				} else {
+					setupScript = "USER_BASHRC"
+				}
+
+				// 关键点：不要 strings.Fields(argsStr)！
+				// 直接把这整个长字符串作为一个元素放入 slice
+				finalArgs = []string{argsStr}
+
+			} else if len(req.Args) == 1 {
+				// 容错分支
+				setupScript = "USER_BASHRC"
+				// 同样不要分割
+				finalArgs = []string{req.Args[0]}
+			} else {
+				setupScript = "USER_BASHRC"
+			}
+
+			// 如果是 bash 命令，特殊处理一下 cmdStr
+			if req.Cmd == "bash" {
+				// 为了简化前端，这里做个自动适配：
+				if req.Cmd == "bash" && len(finalArgs) > 0 {
+					rawCmd := finalArgs[0]
+					finalArgs = []string{"-c", fmt.Sprintf("%q", rawCmd)}
+				}
+			}
+
+		case "bash":
+			// 约定: Args[0] = 纯命令字符串 (如 "ls -la"), Args[1] = 环境路径
+			// 开启 Raw 模式，让 proc_manager 仅仅做字符串拼接
+			isRaw = true
+			var userCommand string
+
+			if len(req.Args) >= 2 {
+				userCommand = req.Args[0]
+				contextPath := req.Args[1]
 				// 1. 探测环境
-				log.Printf("[Proc-Debug] Detecting env from path: %s", contextPath)
 				detected := utils.DetectWorkspaceSetup(contextPath)
 				if detected != utils.DefaultRosSetup {
 					setupScript = detected
 					log.Printf("[Proc] Detected workspace: %s", detected)
 				} else {
 					setupScript = "USER_BASHRC"
-					log.Printf("[Proc] Workspace not found, using bashrc")
 				}
-
-				// 2. 解析参数 (关键！)
-				// strings.Fields 会自动按空格分割字符串，处理多个空格的情况
-				finalArgs = strings.Fields(argsStr)
-
 			} else if len(req.Args) == 1 {
-				// 容错：只传了命令，没传路径
+				// 容错: 没传路径
+				userCommand = req.Args[0]
 				setupScript = "USER_BASHRC"
-				finalArgs = strings.Fields(req.Args[0])
 			} else {
-				// 没参数？
+				// 空命令
 				setupScript = "USER_BASHRC"
+				userCommand = "echo 'No command provided'"
 			}
-
-		case "bash":
-			if len(req.Args) >= 2 {
-				fullCommand := req.Args[0]
-				contextPath := req.Args[1]
-
-				detected := utils.DetectWorkspaceSetup(contextPath)
-				if detected != utils.DefaultRosSetup {
-					setupScript = detected
-				} else {
-					setupScript = "USER_BASHRC"
-				}
-
-				finalCmd = "bash"
-				// bash -c "..." 这里的命令字符串需要作为一个整体参数
-				finalArgs = []string{"-c", fullCommand}
-			} else {
-				setupScript = "USER_BASHRC"
-				if len(req.Args) > 0 {
-					finalCmd = "bash"
-					finalArgs = []string{"-c", req.Args[0]}
-				}
-			}
+			// 2. 构造 bash -c 指令
+			// 我们需要执行: bash -c "用户输入的命令"
+			// 因为 proc_manager 开启了 RawArgs，它会直接拼接字符串。
+			// 所以我们需要在这里手动用 %q 给 userCommand 加上双引号并转义内部字符。
+			finalCmd = "bash"
+			// 最终 args 数组变成: ["-c", "\"ls -la | grep x\""]
+			// 拼接后效果: bash -c "ls -la | grep x"
+			finalArgs = []string{"-c", fmt.Sprintf("%q", userCommand)}
 
 		default:
 			log.Printf("[Proc-Debug] Unknown command '%s', hitting default case", req.Cmd)
@@ -134,6 +158,7 @@ func RegisterProcRoutes(rg *gin.RouterGroup) {
 			Args:        finalArgs,
 			Env:         finalEnv,
 			SetupScript: setupScript,
+			RawArgs:     isRaw,
 		}
 
 		if err := service.GlobalProcManager.StartProcess(procConfig); err != nil {
